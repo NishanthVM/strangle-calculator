@@ -4,6 +4,7 @@ import { CardShell } from "./CardShell";
 import { NumberField } from "./NumberField";
 import { ResultRow } from "./ResultRow";
 import { ErrorBanner } from "./ErrorBanner";
+import { OptionChainPanel } from "./OptionChainPanel";
 import { runMinLeverageCalculator } from "../lib/minLeverageCalculations";
 import { formatINR, formatNumber, formatUSD } from "../lib/format";
 import type { MinLeverageCalculatorInputs } from "../types";
@@ -29,6 +30,7 @@ const DEFAULTS: MinLeverageCalculatorInputs = {
 
 export function MinLeverageCalculator() {
   const [inputs, setInputs] = useState<MinLeverageCalculatorInputs>(DEFAULTS);
+  const [panelResetSignal, setPanelResetSignal] = useState(0);
 
   const setField = (key: keyof MinLeverageCalculatorInputs) => (value: string) =>
     setInputs((current) => ({ ...current, [key]: value }));
@@ -60,7 +62,10 @@ export function MinLeverageCalculator() {
     <CardShell
       title="Minimum Leverage Calculator"
       subtitle="Combined two-leg strangle risk sizing, then leverage solved from Delta's margin formula — never below the exchange floor"
-      onReset={() => setInputs(DEFAULTS)}
+      onReset={() => {
+        setInputs(DEFAULTS);
+        setPanelResetSignal((s) => s + 1);
+      }}
       fullWidth
     >
       <p className="text-[11px] leading-snug text-ink-faint dark:text-ink-faint-dark -mt-1 mb-3.5">
@@ -250,6 +255,18 @@ export function MinLeverageCalculator() {
           )}
         </div>
       </div>
+
+      <OptionChainPanel
+        manualBtcIndexPrice={parseFloat(inputs.btcIndexPrice)}
+        callStrike={inputs.callStrike}
+        putStrike={inputs.putStrike}
+        onSelectCallStrike={setField("callStrike")}
+        onSelectPutStrike={setField("putStrike")}
+        onUseLiveIndex={(price) => setField("btcIndexPrice")(String(price))}
+        onUseLiveCallPremium={(premium) => setField("callPremium")(String(premium))}
+        onUseLivePutPremium={(premium) => setField("putPremium")(String(premium))}
+        resetSignal={panelResetSignal}
+      />
     </CardShell>
   );
 }

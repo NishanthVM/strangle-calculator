@@ -17,10 +17,18 @@ strangle positions on Delta Exchange BTC options. Three calculators:
   the leverage that makes the required margin equal your entered margin
   — never displaying a usable leverage below the exchange's configured
   minimum. Margin is completely independent of capital/risk and only
-  enters the picture after lot sizing is done.
+  enters the picture after lot sizing is done. It also includes a live
+  BTC option chain panel (Delta Exchange India public API) that
+  classifies your selected CALL/PUT strikes as ATM / ITM N / OTM N based
+  on the actual listed strike ladder for the current expiry — see
+  "Option chain integration" below for important caveats.
 
-Everything recalculates instantly as you type. No backend, no external
-API calls — all math happens in the browser.
+Everything recalculates instantly as you type. All position-sizing math
+happens locally in the browser — the only network calls this project
+makes are the Minimum Leverage Calculator's optional, read-only fetches
+to Delta Exchange India's public market-data API for strike
+classification (see below); nothing is ever sent to Delta, and the app
+works fully in manual mode if that fetch fails or is unavailable.
 
 ## Stack
 
@@ -55,14 +63,20 @@ src/
   lib/
     calculations.ts                 Pure, typed calculation + validation functions
                                      for the Premium and Lots calculators
-    minLeverageCalculations.ts      Minimum Leverage Calculator logic — reuses
-                                     calculateDailyRisk, calculateTradingLossBudgetINR,
-                                     inrToUSD, calculateBTCQuantity, and
-                                     calculateMaxContracts from calculations.ts
-                                     rather than duplicating them
-    format.ts                       Currency/number formatting helpers
+    minLeverageCalculations.ts      Minimum Leverage Calculator risk/fee/margin/leverage
+                                     logic — reuses calculateDailyRisk and inrToUSD from
+                                     calculations.ts rather than duplicating them
+    optionChainClassification.ts    Pure ATM/ITM N/OTM N strike classification —
+                                     ranked by the actual listed strike ladder, no
+                                     network dependency, fully unit-testable
+    deltaApi.ts                      Delta Exchange India public API client (defensive
+                                     parsing, no credentials) — see "Option chain
+                                     integration" below
+    format.ts                       Currency/number/date/relative-time formatting helpers
   hooks/
     useTheme.ts                      Theme state, localStorage persistence, system-preference fallback
+    useOptionChain.ts                 Fetch state, expiry selection, caching, and
+                                     30s auto-refresh for the live option chain
   components/
     NumberField.tsx                  Labeled numeric input
     ResultRow.tsx                     Labeled result line (supports profit/risk tone, "big" hero style)
@@ -72,6 +86,7 @@ src/
     PremiumCalculator.tsx              Calculator 1
     LotsCalculator.tsx                 Calculator 2
     MinLeverageCalculator.tsx          Calculator 3
+    OptionChainPanel.tsx                Live option chain sub-panel inside Calculator 3
   App.tsx                            Page layout
   main.tsx                           React entry point
   index.css                          Tailwind directives + base styles
@@ -190,3 +205,73 @@ this spec had one worked example for the Lots Calculator whose Take
 Profit Level looked inconsistent with the formula demonstrated
 elsewhere. This implementation uses the consistent formula throughout
 (`premium × TP%`).
+
+## Option chain integration
+
+The Minimum Leverage Calculator includes a live BTC option-chain panel
+that classifies your selected CALL/PUT strikes as ATM / ITM N / OTM N,
+ranked against the **actual strikes listed on Delta Exchange India for
+the current expiry** — never a fixed dollar interval. It's purely a
+classification/data feature: it never changes the risk, fee, margin, or
+leverage formulas, and the calculator works exactly as before with
+manual strike entry if the chain is unavailable.
+
+### What it does
+
+- Fetches live BTC option expiries and the call/put chain from Delta
+  Exchange India's public REST API (`GET /v2/products`,
+  `GET /v2/tickers`) — no API key or credentials involved, read-only
+  market data only.
+- Finds the ATM strike as whichever listed strike is closest to the BTC
+  index price (ties are shown explicitly, e.g. "ATM 116,000 / 117,000
+  (tied)" — never silently resolved).
+- Ranks every other listed strike by its **position on the actual
+  ladder**, not by dollar distance, so uneven strike spacing (e.g. 500
+  apart near the money, 2,500 apart further out) still produces correct
+  ITM 1 / ITM 2 / ... / OTM 1 / OTM 2 / ... labels.
+- Optional "Use Live BTC Index" and "Use Live Premium" toggles (off by
+  default) can populate the existing BTC Index Price / CALL Premium /
+  PUT Premium inputs from live data — your manually typed values are
+  never overwritten unless you explicitly enable a toggle.
+- Auto-refreshes every 30 seconds, plus a manual "Refresh Chain" button;
+  fetched chains are cached per-expiry so switching back to an
+  already-loaded expiry (or hitting the calculator's Reset button)
+  doesn't force a redundant refetch.
+- On any API failure (network error, CORS, rate limit, empty chain,
+  etc.) the panel shows "Unable to fetch the Delta Exchange option
+  chain. Using manual strike mode." and the rest of the calculator
+  — including the CALL/PUT Strike Price number fields — keeps working
+  exactly as it did before this feature existed.
+
+### Important caveats — please read before relying on this
+
+This was built and type-checked in a sandboxed environment with **no
+network route to `api.india.delta.exchange`**, so the live fetch could
+not actually be executed and verified here:
+
+- **Response field names are inferred, not confirmed.** `deltaApi.ts`
+  parses fields like `strike_price`, `mark_price`, `spot_price`,
+  `quotes.best_bid/best_ask`, and `greeks.delta` based on Delta's
+  publicly documented v2 conventions and the request's own description
+  of the endpoints — not a response I was able to fetch and inspect. If
+  the live API uses different field names, only the `normalizeTicker`
+  function in that file needs adjusting; every other file only sees the
+  already-normalized `OptionContract` shape.
+- **CORS behavior is untested.** If the browser can't call
+  `api.india.delta.exchange` directly from your deployed origin, every
+  request will fail with a generic network error — which the panel
+  already handles via the same "Using manual strike mode" fallback as
+  any other API failure, so the calculator won't break, but the live
+  feature simply won't activate. A backend proxy would be the fix if
+  that turns out to be the case; that's a real architecture change
+  (this project has no backend), so it wasn't added speculatively.
+- **The live index price is extracted from `spot_price` fields embedded
+  in the option tickers themselves** (a common pattern, but not
+  independently confirmed here) rather than a dedicated index endpoint.
+  If that field isn't present, "Use Live BTC Index" simply stays
+  disabled and greyed out.
+
+If you run this and the live chain doesn't populate, check the browser
+console/network tab for the actual response shape and error — that'll
+tell us immediately whether it's a field-name mismatch (quick fix in
+`normalizeTicker`) or a CORS block (needs a proxy).
