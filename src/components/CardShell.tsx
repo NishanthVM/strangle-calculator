@@ -6,14 +6,16 @@ interface CardShellProps {
   subtitle: string;
   onReset: () => void;
   children: ReactNode;
+  /** When true, the card takes the full row instead of the default ~380px basis. Defaults to false. */
+  fullWidth?: boolean;
 }
 
-export function CardShell({ title, subtitle, onReset, children }: CardShellProps) {
+export function CardShell({ title, subtitle, onReset, children, fullWidth = false }: CardShellProps) {
   return (
     <div
-      className="flex-1 min-w-[300px] basis-[380px] rounded-card border
+      className={`flex-1 min-w-[300px] ${fullWidth ? "basis-full" : "basis-[380px]"} rounded-card border
                  border-line dark:border-line-dark
-                 bg-card dark:bg-card-dark p-5"
+                 bg-card dark:bg-card-dark p-5`}
     >
       <div className="flex justify-between items-start">
         <div>
