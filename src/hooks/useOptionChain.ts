@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchBtcOptionChain, fetchBtcOptionExpiries, type OptionChain } from "../lib/deltaApi";
+import { fetchBtcOptionChain, fetchBtcOptionExpiries, type ExpiryInfo, type OptionChain } from "../lib/deltaApi";
 
 const AUTO_REFRESH_MS = 30000;
 
@@ -12,8 +12,10 @@ const AUTO_REFRESH_MS = 30000;
 const chainCache = new Map<string, OptionChain>();
 
 export interface UseOptionChainState {
-  expiries: string[];
+  expiries: ExpiryInfo[];
   selectedExpiry: string | null;
+  /** Precise settlement timestamp of the currently selected expiry, if known. */
+  selectedExpirySettlementMs: number | null;
   chain: OptionChain | null;
   loading: boolean;
   error: string | null;
@@ -23,7 +25,7 @@ export interface UseOptionChainState {
 }
 
 export function useOptionChain(): UseOptionChainState {
-  const [expiries, setExpiries] = useState<string[]>([]);
+  const [expiries, setExpiries] = useState<ExpiryInfo[]>([]);
   const [selectedExpiry, setSelectedExpiryState] = useState<string | null>(null);
   const [chain, setChain] = useState<OptionChain | null>(null);
   const [loading, setLoading] = useState(false);
@@ -66,7 +68,7 @@ export function useOptionChain(): UseOptionChainState {
       if (cancelled) return;
       if (result.ok && result.data && result.data.length > 0) {
         setExpiries(result.data);
-        setSelectedExpiryState((current) => current ?? result.data![0]);
+        setSelectedExpiryState((current) => current ?? result.data![0].date);
       } else {
         setError(result.error ?? "Unable to fetch the Delta Exchange option chain. Using manual strike mode.");
       }
@@ -102,5 +104,18 @@ export function useOptionChain(): UseOptionChainState {
     if (selectedExpiry) loadChainFor(selectedExpiry, true);
   }, [selectedExpiry, loadChainFor]);
 
-  return { expiries, selectedExpiry, chain, loading, error, lastUpdated, setSelectedExpiry, refresh };
+  const selectedExpirySettlementMs =
+    expiries.find((e) => e.date === selectedExpiry)?.settlementMs ?? null;
+
+  return {
+    expiries,
+    selectedExpiry,
+    selectedExpirySettlementMs,
+    chain,
+    loading,
+    error,
+    lastUpdated,
+    setSelectedExpiry,
+    refresh,
+  };
 }

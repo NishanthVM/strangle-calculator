@@ -14,6 +14,11 @@ interface OptionChainPanelProps {
   onUseLiveIndex: (price: number) => void;
   onUseLiveCallPremium: (premium: number) => void;
   onUseLivePutPremium: (premium: number) => void;
+  /** Fired whenever the selected CALL/PUT contract's live implied volatility is known/changes (independent of the premium toggle — IV is a market observable, not a user override). */
+  onCallIvChange: (ivPct: number | null) => void;
+  onPutIvChange: (ivPct: number | null) => void;
+  /** Fired whenever the selected expiry's precise settlement timestamp is known/changes. */
+  onExpiryInfoChange: (settlementMs: number | null) => void;
   /** Bumped by the parent's Reset button — resets this panel's own toggles without discarding the cached chain. */
   resetSignal: number;
 }
@@ -31,10 +36,22 @@ export function OptionChainPanel({
   onUseLiveIndex,
   onUseLiveCallPremium,
   onUseLivePutPremium,
+  onCallIvChange,
+  onPutIvChange,
+  onExpiryInfoChange,
   resetSignal,
 }: OptionChainPanelProps) {
-  const { expiries, selectedExpiry, chain, loading, error, lastUpdated, setSelectedExpiry, refresh } =
-    useOptionChain();
+  const {
+    expiries,
+    selectedExpiry,
+    selectedExpirySettlementMs,
+    chain,
+    loading,
+    error,
+    lastUpdated,
+    setSelectedExpiry,
+    refresh,
+  } = useOptionChain();
 
   const [useLiveIndex, setUseLiveIndex] = useState(false);
   const [useLiveCallPremium, setUseLiveCallPremium] = useState(false);
@@ -47,12 +64,17 @@ export function OptionChainPanel({
     setUseLiveCallPremium(false);
     setUseLivePutPremium(false);
     setChainTableOpen(false);
-    if (expiries.length > 0) setSelectedExpiry(expiries[0]); // nearest/current expiry
+    if (expiries.length > 0) setSelectedExpiry(expiries[0].date); // nearest/current expiry
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal]);
 
   const liveIndexPrice = chain ? extractLiveIndexPrice(chain) : null;
   const effectiveIndexPrice = useLiveIndex && liveIndexPrice !== null ? liveIndexPrice : manualBtcIndexPrice;
+
+  useEffect(() => {
+    onExpiryInfoChange(selectedExpirySettlementMs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedExpirySettlementMs]);
 
   // Push the live index up to the parent whenever it's enabled and a fresh value is available.
   useEffect(() => {
@@ -100,6 +122,16 @@ export function OptionChainPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useLivePutPremium, selectedPutContract?.premium]);
 
+  useEffect(() => {
+    onCallIvChange(selectedCallContract?.markIvPct ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCallContract?.markIvPct]);
+
+  useEffect(() => {
+    onPutIvChange(selectedPutContract?.markIvPct ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPutContract?.markIvPct]);
+
   const hasChain = chain !== null && combinedLadder.length > 0;
 
   return (
@@ -146,8 +178,8 @@ export function OptionChainPanel({
         >
           {expiries.length === 0 && <option>Unavailable</option>}
           {expiries.map((exp) => (
-            <option key={exp} value={exp}>
-              {formatExpiryLabel(exp)}
+            <option key={exp.date} value={exp.date}>
+              {formatExpiryLabel(exp.date)}
             </option>
           ))}
         </select>

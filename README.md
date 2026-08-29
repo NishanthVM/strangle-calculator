@@ -7,20 +7,19 @@ strangle positions on Delta Exchange BTC options. Three calculators:
   number of contracts, computes the maximum premium you can sell per leg.
 - **Lots Calculator** — given capital, risk %, fees, premium, and stop
   loss %, computes the maximum number of contracts you can sell per leg.
-- **Minimum Leverage Calculator** — models the combined risk of a two-leg
-  short strangle using a deterministic rule (the higher-premium leg is
-  the one that gets stopped out, the lower-premium leg is the one taken
-  at profit), includes Delta Exchange's documented fee methodology for
-  both legs, finds the maximum lots per leg that keeps the worst-case net
-  loss within your Total Risk % of capital, then solves Delta's
-  documented Approximate Initial Margin formula (per leg, combined) for
-  the leverage that makes the required margin equal your entered margin
-  — never displaying a usable leverage below the exchange's configured
-  minimum. Margin is completely independent of capital/risk and only
-  enters the picture after lot sizing is done. It also includes a live
-  BTC option chain panel (Delta Exchange India public API) that
-  classifies your selected CALL/PUT strikes as ATM / ITM N / OTM N based
-  on the actual listed strike ladder for the current expiry — see
+- **Minimum Leverage Calculator** — a combined-risk position sizer for a
+  BTC short strangle/straddle: capital and Total Risk % determine the
+  maximum lots per leg (a deterministic rule — the higher-premium leg is
+  modeled as the one that gets stopped out, the lower-premium leg as the
+  one taken at profit — plus both legs' Delta Exchange fees). Those exact
+  lots then feed Delta's actual documented margin methodology (Isolated
+  or Portfolio mode — see "Delta margin methodology" below), which is
+  used only after lot sizing to compute leverage against your entered
+  margin, floored at a configurable exchange minimum (default 1×).
+  Also shows maximum profit/loss, risk:reward, break-evens, strategy
+  (strangle vs. straddle) and same-day-expiry handling, plus a live BTC
+  option chain panel (Delta Exchange India public API) for strike
+  classification (ATM / ITM N / OTM N) and premium/IV auto-fill — see
   "Option chain integration" below for important caveats.
 
 Everything recalculates instantly as you type. All position-sizing math
@@ -63,9 +62,17 @@ src/
   lib/
     calculations.ts                 Pure, typed calculation + validation functions
                                      for the Premium and Lots calculators
-    minLeverageCalculations.ts      Minimum Leverage Calculator risk/fee/margin/leverage
-                                     logic — reuses calculateDailyRisk and inrToUSD from
-                                     calculations.ts rather than duplicating them
+    minLeverageCalculations.ts      Minimum Leverage Calculator: risk, lot-sizing,
+                                     and fees ONLY — reuses calculateDailyRisk and
+                                     inrToUSD from calculations.ts
+    deltaMarginCalculations.ts       Composes on minLeverageCalculations.ts's output
+                                     to add margin, leverage, strategy detection,
+                                     profit/loss, risk:reward, and break-even
+    deltaPortfolioMargin.ts           Delta's documented Portfolio Margin methodology
+                                     (shock spans, 29-scenario stress test, margin
+                                     floor) — verified against official docs
+    blackScholes.ts                   Standard European option pricer, used only as
+                                     Portfolio Margin's scenario-repricing engine
     optionChainClassification.ts    Pure ATM/ITM N/OTM N strike classification —
                                      ranked by the actual listed strike ladder, no
                                      network dependency, fully unit-testable
@@ -130,81 +137,130 @@ stopLossLevel     = premiumUSD × stopLossPct / 100
 maxLossAtSL       = stopLossLevel × btcQty
 ```
 
-### Minimum Leverage Calculator (`src/lib/minLeverageCalculations.ts`)
+### Minimum Leverage Calculator
 
-**Total Risk % is the maximum net loss for the ENTIRE two-leg strangle.**
-The **higher-premium leg is deterministically the losing leg** (reaches
-stop loss); the lower-premium leg is the profit leg (reaches take
-profit) — not a max() of two scenarios. Equal premiums default to CALL
-as the losing leg.
+Split across two composed modules, matching the two genuinely separate
+concerns the spec insists on never mixing:
+
+- **`src/lib/minLeverageCalculations.ts`** — risk, lot-sizing, and fees
+  ONLY. No margin, no leverage, no strike inputs at all.
+- **`src/lib/deltaMarginCalculations.ts`** — composes on top of the
+  above module's output (never recomputes it) to add margin, leverage,
+  strategy detection, profit/loss, risk:reward, and break-even. Calls
+  into `src/lib/deltaPortfolioMargin.ts` (Delta's documented Portfolio
+  Margin methodology) and `src/lib/blackScholes.ts` (a standard
+  European-option pricer, used only as the repricing engine for
+  Portfolio Margin's stress-test scenarios).
+
+**Total Risk % is the maximum net loss for the ENTIRE two-leg position**
+— never a per-leg budget. Margin is completely independent of
+capital/risk and is used only *after* lots are already known:
 
 ```
+# Risk / lots / fees (minLeverageCalculations.ts) — UNCHANGED from
+# capital through to combined lots regardless of margin mode:
 1. riskBudgetINR = capital × riskPct / 100      ("Maximum Total Risk ₹")
 2. riskBudgetUSD = riskBudgetINR / usdInr
-
 3. losingPremium  = max(callPremium, putPremium)   (tie → CALL)
    profitPremium  = the other leg's premium
-4. grossLossPerBTC = losingPremium × slPct/100 − profitPremium × tpPct/100
-5. grossLossPerContract = grossLossPerBTC × contractSize
+4. grossLossPerContract = (losingPremium × slPct/100 − profitPremium × tpPct/100) × contractSize
+5. feePerContract = Delta fee formula (% of order notional, capped at % of premium, +GST), CALL + PUT
+6. maxContracts = floor(riskBudgetUSD / (grossLossPerContract + feePerContract))   (lots PER LEG)
+7. combinedLots = maxContracts × 2
 
-# Delta Exchange fee methodology, per leg — a % of order notional, capped
-# at a % of premium value, plus GST:
-6. orderNotional  = contracts × contractSize × btcIndexPrice
-   percentageFee   = orderNotional × feeRatePct/100
-   premiumCap       = premiumCapPct/100 × contracts × contractSize × premium
-   effectiveFee      = MIN(percentageFee, premiumCap)
-   totalFee           = effectiveFee × (1 + gstPct/100)
-   (computed separately for CALL and PUT, then summed)
+# Strategy (deltaMarginCalculations.ts):
+8. strategy = callStrike === putStrike ? "SHORT STRADDLE" : "SHORT STRANGLE"
 
-7. maxContracts = floor(riskBudgetUSD / (grossLossPerContract-at-N=1 + fee-per-contract))
-   (linear in N — see LINEARITY NOTE in the source file for why no
-   iteration/binary-search is mathematically necessary here)
-8. combinedLots = maxContracts × 2
+# Maximum profit / loss / risk:reward:
+9.  maxGrossProfit = (callPremium + putPremium) × maxContracts × contractSize
+10. maxNetProfit    = maxGrossProfit − totalFees
+11. maxPlannedLoss  = the risk engine's worstNetLoss (steps 1-6 above) — reused, not recomputed
+12. rewardMultiple  = maxNetProfit / maxPlannedLoss        → "Risk : Reward = 1 : rewardMultiple"
 
-# Leverage is solved from Delta Exchange's documented Approximate Initial
-# Margin formula, NOT from premium exposure or a plain notional/margin
-# ratio. Per leg:
-#   IM = premiumComponent + (underlyingNotional / leverage) − OTMAmount
-#   premiumComponent   = premium × contracts × contractSize
-#   underlyingNotional = btcIndexPrice × contracts × contractSize
-#   OTMAmount           = max(strike − price, 0) [CALL] or max(price − strike, 0) [PUT], × contracts × contractSize
-# Combined IM(leverage) is strictly decreasing in leverage, so solving
-# combinedIM(L) = marginEntered for L gives exactly the bare-minimum
-# leverage:
-9.  L = combinedUnderlyingNotional / (marginEntered − combinedPremiumComponent + combinedOTMAmount)
-10. minUsableLeverage = max(L, exchangeMinLeverage)
+# Break-even:
+13. upperBreakEven = callStrike + (callPremium + putPremium)
+    lowerBreakEven = putStrike  − (callPremium + putPremium)
+
+# Delta Exchange margin — ISOLATED mode:
+14. legMargin = isolatedMarginPct/100 × maxContracts × contractSize × btcIndexPrice   (per leg, no offsetting)
+    combinedMargin = callMargin + putMargin
+
+# Delta Exchange margin — PORTFOLIO mode:
+15. marginFloor = Σ max(5% × legPremiumValue, OM% × legNotional)
+    (OM% computed once off the aggregate short-options notional; see
+    deltaPortfolioMargin.ts for the exact Base%/BaseNotional/Slope/Cap
+    parameters, all quoted directly from Delta's documentation)
+16. riskMargin  = Delta's documented 29-scenario price/IV stress test
+    (9 price steps × 3 IV states + 2 extreme 300%-price/⅓-weighted
+    scenarios), repricing both legs with Black-Scholes at each shocked
+    spot/IV and taking the maximum portfolio loss — requires live IV per
+    leg; shows "Risk Margin unavailable" and falls back to Margin Floor
+    alone if the option chain doesn't expose it
+17. combinedMargin = max(riskMargin, marginFloor)
+
+# Leverage (both modes) — a direct ratio, not solved from the margin formula,
+# since Delta's real formulas don't parameterize margin BY leverage:
+18. combinedPositionNotional = combinedLots × contractSize × btcIndexPrice
+19. theoreticalLeverage = combinedPositionNotional / marginUSD
+20. minUsableLeverage   = max(theoreticalLeverage, exchangeMinLeverage)   (default exchangeMinLeverage = 1×)
 ```
 
-**OTM amount scaling**: Delta's formula names an OTM term but the
-reference material only gives its per-BTC moneyness definition, not its
-exact scaling inside the IM formula. Since it must combine additively
-with `underlyingNotional` (which IS scaled by `contracts × contractSize`),
-this implementation scales OTM the same way — an explicit judgment call,
-documented in `minLeverageCalculations.ts`, not something quoted from
-Delta's docs.
+**Verified against the full test matrix** (all pass — see the "Final
+validation" commit history / conversation for the exact numbers):
+short strangle vs. straddle detection, asymmetric-premium losing-leg
+detection in both directions, 1%-of-capital combined risk budget,
+margin/capital independence (changing margin never changes lots;
+changing capital changes both risk budget and lots), and the exchange
+minimum leverage floor (1× by default — a small-notional case correctly
+shows usable = 1× while a normal case shows usable = theoretical,
+never forced to 1× unconditionally).
 
-Verified against the spec's test matrix (all pass):
+### Delta margin methodology — sources and honesty notes
 
-| Test | Result |
-|---|---|
-| Reference example (CALL $78 / PUT $77, margin $796, strikes $105k/$95k) | 47 lots/leg, theoretical 7.47×, **usable = 16× (exchange floor)** — the previous 0.02× bug is gone |
-| Defaults (CALL $25 / PUT $25, margin $10) | 147 lots/leg, theoretical 19.96× (above the floor, so usable = theoretical); required margin at that leverage recomputes to exactly $10, confirming the algebraic solve is correct |
-| CALL $78 / PUT $77 | CALL correctly identified as losing leg (higher premium) |
-| CALL $77 / PUT $78 | PUT correctly identified as losing leg |
-| Margin $796 → $500 | Lots unchanged (47 both times) — margin never affects lot sizing |
-| Capital 100k → 200k | Lots roughly double (47 → 94) |
-| Small-margin case | Theoretical leverage (20.03×) exceeds the exchange minimum, so usable = theoretical rather than being clamped to 16× |
+The margin formulas above are **not invented** — they're transcribed
+directly from Delta Exchange India's official public documentation,
+fetched and read while building this:
 
-Edge cases verified: fees alone exceeding the risk budget, budget too
-small for 1 contract, inputs producing no positive worst-case loss, and
-entered margin insufficient to cover the position at any leverage all
-return clear error messages — never `NaN`/`Infinity`/negative values.
+- **Portfolio Margin** (shock-span tables, the IV max up/down formula,
+  the 29-scenario grid, and the BTC margin-floor parameters — Base%
+  0.5%, Base Notional $200,000, Slope 0.0000005%, Cap 2%): all quoted
+  directly from
+  `guides.delta.exchange/delta-exchange-india-user-guide/trading-guide/margin-explainer/portfolio-margin`.
+  Verified numerically against that page's own worked examples (shock
+  spans at $1.1M notional, IV max up/down at several DTE values) before
+  being implemented — see the git history / build verification for the
+  exact figures.
+- **Isolated Margin** (`IM = InitialMargin% × Contracts × Multiplier ×
+  Price`): the formula *structure* is quoted from
+  `guides.delta.exchange/.../margin-explainer/margin-explainer`, but
+  `InitialMargin%` itself is genuinely **per-contract and position-size
+  dependent** — Delta publishes it live per contract at
+  delta.exchange/contracts, not as a single stable constant. Rather than
+  fabricate a number, this calculator exposes **Isolated Margin %** as a
+  labeled, user-editable input — verify the real value for your specific
+  contract on Delta Exchange before trusting the isolated-mode output.
+- **The last-30-minutes expiry-day quantity reduction** (`expiryFactor`
+  in `deltaPortfolioMargin.ts`): Delta's documentation describes this
+  qualitatively ("30-min TWAP settlement... results in linear reduction
+  of delta risk exposures... in the 30 mins leading to expiry") but
+  doesn't publish an exact formula. The linear ramp implemented here is
+  a reasonable modeling choice consistent with that description, not a
+  quoted exchange formula — flagged as such in code comments.
+- **Black-Scholes with r=0**: a standard, textbook option-pricing model
+  used only as Portfolio Margin's repricing engine for the documented
+  stress scenarios — not Delta-specific, and not independently verified
+  against Delta's internal pricer.
+- **Risk Margin requires live implied volatility** per leg from the
+  option chain API, which this project has not been able to confirm the
+  exact field name for (see "Option chain integration" below) — if
+  unavailable, Portfolio Margin mode transparently falls back to Margin
+  Floor alone rather than guessing an IV.
 
-**Note on the older Take Profit Level example:** an earlier iteration of
-this spec had one worked example for the Lots Calculator whose Take
-Profit Level looked inconsistent with the formula demonstrated
-elsewhere. This implementation uses the consistent formula throughout
-(`premium × TP%`).
+Every margin figure in the UI is labeled **"Estimated"** and paired with
+a note to verify on the exchange before trading — this calculator models
+Delta's documented methodology as accurately as public sources allow,
+but is not a substitute for the exchange's own live margin quote,
+especially for same-day expiry options where margin can move quickly.
 
 ## Option chain integration
 

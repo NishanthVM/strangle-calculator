@@ -79,9 +79,9 @@ export interface LotsCalculatorResult {
 export type Calculation<T> = { ok: true; value: T } | { ok: false; error: string };
 
 /* ────────────────────────────────────────────────────────────────────────
-   Minimum Leverage Calculator (additive — reuses calculateDailyRisk and
-   inrToUSD from calculations.ts; does not affect the Premium or Lots
-   calculators above).
+   Minimum Leverage Calculator — RISK / LOT-SIZING / FEE engine (additive
+   — reuses calculateDailyRisk and inrToUSD from calculations.ts; does
+   not affect the Premium or Lots calculators above).
 
    CRITICAL MODEL:
    - Total Risk % is the maximum NET loss for the ENTIRE two-leg strangle,
@@ -93,16 +93,10 @@ export type Calculation<T> = { ok: true; value: T } | { ok: false; error: string
      notional, capped at a % of the leg's premium value, plus GST —
      calculated separately for each leg, and recalculated at the actual
      lot count (not multiplied naively).
-   - Capital determines risk and lots. Margin is completely independent
-     of capital/risk and is used ONLY after lots are known.
-   - Leverage is solved from Delta's documented Approximate Initial
-     Margin formula (premium + underlying notional/leverage − OTM
-     amount), NOT from premium exposure or notional/margin directly —
-     the entered margin is treated as the target IM, and the calculator
-     solves algebraically for the leverage that makes the combined IM
-     equal to it. That's the theoretical bare-minimum leverage; the
-     displayed usable leverage is never below the exchange's configured
-     minimum.
+   - Capital determines risk and lots. Margin, leverage, and Delta's
+     actual margin methodology are handled separately by
+     DeltaMarginCalculator (below) — this type has no margin-related
+     fields at all.
    ──────────────────────────────────────────────────────────────────────── */
 
 export interface MinLeverageCalculatorInputs {
@@ -113,15 +107,11 @@ export interface MinLeverageCalculatorInputs {
   takeProfitPct: string;
   stopLossPct: string;
   usdInr: string;
-  margin: string;
   contractSize: string;
   btcIndexPrice: string;
-  callStrike: string;
-  putStrike: string;
   feeRatePct: string;
   premiumCapPct: string;
   gstPct: string;
-  exchangeMinLeverage: string;
 }
 
 export interface MinLeverageCalculatorValues {
@@ -132,15 +122,11 @@ export interface MinLeverageCalculatorValues {
   takeProfitPct: number;
   stopLossPct: number;
   usdInr: number;
-  marginUSD: number;
   contractSize: number;
   btcIndexPriceUSD: number;
-  callStrikeUSD: number;
-  putStrikeUSD: number;
   feeRatePct: number;
   premiumCapPct: number;
   gstPct: number;
-  exchangeMinLeverage: number;
 }
 
 export interface MinLeverageCalculatorResult {
@@ -167,23 +153,102 @@ export interface MinLeverageCalculatorResult {
   riskUtilizationPct: number;
   maxContracts: number;
   totalContracts: number;
-  // Delta Exchange Approximate IM formula components (per leg, at maxContracts):
-  callPremiumComponentUSD: number;
-  putPremiumComponentUSD: number;
-  combinedPremiumComponentUSD: number;
-  callUnderlyingNotionalUSD: number;
-  putUnderlyingNotionalUSD: number;
-  combinedUnderlyingNotionalUSD: number;
-  callOTMAmountUSD: number;
-  putOTMAmountUSD: number;
-  combinedOTMAmountUSD: number;
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   Delta Exchange Margin Calculator — margin (isolated or portfolio),
+   leverage, strategy identification (strangle/straddle), max profit/
+   loss, risk:reward, and break-even. Composes on top of
+   MinLeverageCalculatorResult (the lots/fees it needs) rather than
+   recomputing them.
+
+   Verified against guides.delta.exchange/delta-exchange-india-user-guide
+   (Margin Explainer / Isolated Margin / Portfolio Margin pages, fetched
+   directly while building this):
+   - Isolated Margin: IM = InitialMargin% × Contracts × Multiplier × Price.
+     InitialMargin% is genuinely per-contract/position-size-tier (not a
+     single public constant), so it's exposed here as a labeled,
+     user-editable parameter rather than invented.
+   - Portfolio Margin: Margin = max(Risk Margin, Margin Floor). Risk
+     Margin is Delta's documented 29-scenario price/IV stress test
+     (see deltaPortfolioMargin.ts); Margin Floor uses Delta's published
+     BTC parameters (Base% 0.5%, Base Notional $200,000, Slope
+     0.0000005%, Cap 2%).
+   - Leverage: Theoretical Required Leverage = Combined Position Notional
+     ÷ Margin — Delta's margin formulas don't parameterize margin BY
+     leverage the way an earlier (unverified) formula in this project
+     assumed, so this is a direct ratio, not a solved equation.
+   ──────────────────────────────────────────────────────────────────────── */
+
+export type MarginMode = "isolated" | "portfolio";
+
+export interface DeltaMarginCalculatorInputs {
+  margin: string;
+  marginMode: MarginMode;
+  isolatedMarginPct: string;
+  callStrike: string;
+  putStrike: string;
+  exchangeMinLeverage: string;
+  /** Manual fallback when no live expiry timestamp is available from the option chain. */
+  manualDaysToExpiry: string;
+}
+
+export interface DeltaMarginCalculatorValues {
   marginUSD: number;
+  marginMode: MarginMode;
+  isolatedMarginPct: number;
+  callStrikeUSD: number;
+  putStrikeUSD: number;
+  exchangeMinLeverage: number;
+  btcIndexPriceUSD: number;
+  contractSize: number;
+  usdInr: number;
+  callPremiumUSD: number;
+  putPremiumUSD: number;
+  /** Live implied vol (%) per leg, from the option chain — undefined if unavailable, in which case Risk Margin can't be computed. */
+  callIvPct: number | undefined;
+  putIvPct: number | undefined;
+  /** Precise settlement timestamp from the live chain, if known. */
+  expirySettlementMs: number | null;
+  manualDaysToExpiry: number;
+  nowMs: number;
+}
+
+export interface DeltaMarginResult {
+  strategy: "SHORT STRANGLE" | "SHORT STRADDLE";
+  isSameDayExpiry: boolean;
+  daysToExpiry: number;
+  minutesToExpiry: number | null;
+  expiryFactor: number;
+
+  // Maximum profit
+  maxGrossProfitUSD: number;
+  maxNetProfitUSD: number;
+  maxNetProfitINR: number;
+
+  // Maximum planned loss (reuses the risk engine's worst-net-loss figures)
+  maxPlannedLossUSD: number;
+  maxPlannedLossINR: number;
+
+  // Risk:reward
+  rewardMultiple: number;
+
+  // Break-even
+  upperBreakEvenUSD: number;
+  lowerBreakEvenUSD: number;
+
+  // Margin
+  callRequiredMarginUSD: number | null;
+  putRequiredMarginUSD: number | null;
+  combinedRequiredMarginUSD: number;
+  marginIsEstimate: true;
+  riskMarginUSD: number | null; // portfolio mode only
+  marginFloorUSD: number | null; // portfolio mode only
+  riskMarginUnavailableReason: string | null; // e.g. missing live IV
+
+  // Leverage
+  combinedPositionNotionalUSD: number;
   theoreticalLeverage: number;
   exchangeMinLeverage: number;
   minUsableLeverage: number;
-  // Required margin (Delta IM) at the actual usable leverage, for display:
-  callInitialMarginUSD: number;
-  putInitialMarginUSD: number;
-  combinedRequiredMarginUSD: number;
-  isLowLeverage: boolean;
 }

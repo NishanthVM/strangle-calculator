@@ -36,6 +36,7 @@ export interface OptionContract {
   bid?: number;
   ask?: number;
   delta?: number;
+  markIvPct?: number; // implied volatility, as a percentage (e.g. 65 for 65%), if the ticker exposes it
 }
 
 export interface OptionChain {
@@ -78,16 +79,23 @@ interface RawProduct {
  * Fetches the product catalog and derives the list of live BTC option
  * expiry dates (as "DD-MM-YYYY" strings, matching what /v2/tickers
  * expects), sorted chronologically with the nearest first. Never
- * hard-codes an expiry or assumes a weekly cadence.
+ * hard-codes an expiry or assumes a weekly cadence. Each entry also
+ * carries the precise settlement timestamp (not just the calendar date),
+ * needed for accurate same-day/time-to-expiry detection.
  */
-export async function fetchBtcOptionExpiries(): Promise<ApiResult<string[]>> {
+export interface ExpiryInfo {
+  date: string; // "DD-MM-YYYY", as /v2/tickers expects
+  settlementMs: number;
+}
+
+export async function fetchBtcOptionExpiries(): Promise<ApiResult<ExpiryInfo[]>> {
   const result = await fetchJson<{ result?: RawProduct[] }>(`${API_BASE}/v2/products?contract_types=call_options,put_options`);
   if (!result.ok || !result.data) return { ok: false, error: result.error ?? "No data returned" };
 
   const products = result.data.result ?? [];
   const now = Date.now();
 
-  const expiryDates = new Set<string>();
+  const expiryMap = new Map<string, number>(); // date string -> settlement ms
   for (const p of products) {
     const isOption = p.contract_type === "call_options" || p.contract_type === "put_options";
     const isBtc = p.underlying_asset?.symbol === "BTC";
@@ -101,18 +109,19 @@ export async function fetchBtcOptionExpiries(): Promise<ApiResult<string[]>> {
     const dd = String(d.getUTCDate()).padStart(2, "0");
     const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
     const yyyy = d.getUTCFullYear();
-    expiryDates.add(`${dd}-${mm}-${yyyy}`);
+    const dateKey = `${dd}-${mm}-${yyyy}`;
+    // Multiple products can share a calendar date; keep the one closest to now for that date.
+    const existing = expiryMap.get(dateKey);
+    if (existing === undefined || settlementMs < existing) expiryMap.set(dateKey, settlementMs);
   }
 
-  if (expiryDates.size === 0) {
+  if (expiryMap.size === 0) {
     return { ok: false, error: "No live BTC option expiries found in the product catalog" };
   }
 
-  const sorted = Array.from(expiryDates).sort((a, b) => {
-    const [da, ma, ya] = a.split("-").map(Number);
-    const [db, mb, yb] = b.split("-").map(Number);
-    return Date.UTC(ya, ma - 1, da) - Date.UTC(yb, mb - 1, db);
-  });
+  const sorted = Array.from(expiryMap.entries())
+    .map(([date, settlementMs]) => ({ date, settlementMs }))
+    .sort((a, b) => a.settlementMs - b.settlementMs);
 
   return { ok: true, data: sorted };
 }
@@ -124,8 +133,9 @@ interface RawTicker {
   mark_price?: string | number;
   close_price?: string | number;
   spot_price?: string | number;
+  mark_vol?: string | number;
   quotes?: { best_bid?: string | number; best_ask?: string | number };
-  greeks?: { delta?: string | number };
+  greeks?: { delta?: string | number; iv?: string | number };
 }
 
 function toNumber(v: string | number | undefined): number | undefined {
@@ -145,6 +155,7 @@ function normalizeTicker(t: RawTicker): OptionContract | null {
     bid: toNumber(t.quotes?.best_bid),
     ask: toNumber(t.quotes?.best_ask),
     delta: toNumber(t.greeks?.delta),
+    markIvPct: toNumber(t.mark_vol) ?? toNumber(t.greeks?.iv),
   };
 }
 
