@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { CardShell } from "./CardShell";
 import { NumberField } from "./NumberField";
 import { ResultRow } from "./ResultRow";
@@ -6,7 +6,9 @@ import { ErrorBanner } from "./ErrorBanner";
 import { OptionChainPanel } from "./OptionChainPanel";
 import { runMinLeverageCalculator } from "../lib/minLeverageCalculations";
 import { runDeltaMarginCalculation } from "../lib/deltaMarginCalculations";
+import { findClosestPremiumMatch } from "../lib/premiumMatching";
 import { formatINR, formatNumber, formatUSD } from "../lib/format";
+import type { OptionChain } from "../lib/deltaApi";
 import type { DeltaMarginCalculatorInputs, MarginMode, MinLeverageCalculatorInputs } from "../types";
 
 const RISK_DEFAULTS: MinLeverageCalculatorInputs = {
@@ -51,10 +53,80 @@ export function MinLeverageCalculator() {
   const [putIvPct, setPutIvPct] = useState<number | null>(null);
   const [expirySettlementMs, setExpirySettlementMs] = useState<number | null>(null);
 
+  const [chainData, setChainData] = useState<OptionChain | null>(null);
+  const [autoMatchEnabled, setAutoMatchEnabled] = useState(true);
+  const [matchingBuffer, setMatchingBuffer] = useState("5");
+  const [referenceLeg, setReferenceLeg] = useState<"call" | "put" | null>(null);
+  // Set right before a leg is updated PROGRAMMATICALLY (by the matching algorithm) so that
+  // update doesn't itself trigger another round of matching — prevents CALL→PUT→CALL loops.
+  const programmaticUpdateRef = useRef(false);
+
   const setField = (key: keyof MinLeverageCalculatorInputs) => (value: string) =>
     setInputs((current) => ({ ...current, [key]: value }));
   const setMarginField = (key: keyof DeltaMarginCalculatorInputs) => (value: string) =>
     setMarginInputs((current) => ({ ...current, [key]: value }));
+
+  const handleChainDataChange = (chain: OptionChain | null) => {
+    setChainData(chain);
+    // Expiry/chain refresh: re-run matching against the reference leg's CURRENT premium in
+    // the new chain, if that leg's strike still exists there — never mixes expiries.
+    if (!autoMatchEnabled || !referenceLeg || !chain) return;
+    const refStrike = parseFloat(referenceLeg === "call" ? marginInputs.callStrike : marginInputs.putStrike);
+    const refContracts = referenceLeg === "call" ? chain.calls : chain.puts;
+    const refContract = refContracts.find((c) => c.strike === refStrike);
+    if (!refContract || refContract.premium === undefined) return;
+    runMatch(referenceLeg, refStrike, refContract.premium, chain);
+  };
+
+  function runMatch(leg: "call" | "put", strike: number, premium: number, chain: OptionChain) {
+    const candidates = (leg === "call" ? chain.puts : chain.calls)
+      .filter((c) => c.premium !== undefined)
+      .map((c) => ({ strike: c.strike, premium: c.premium as number }));
+    const match = findClosestPremiumMatch(strike, premium, candidates, parseFloat(matchingBuffer));
+    if (!match) return;
+    programmaticUpdateRef.current = true;
+    if (leg === "call") {
+      setMarginField("putStrike")(String(match.strike));
+      setField("putPremium")(String(match.premium));
+    } else {
+      setMarginField("callStrike")(String(match.strike));
+      setField("callPremium")(String(match.premium));
+    }
+  }
+
+  const handleSelectCallStrike = (strike: string) => {
+    setMarginField("callStrike")(strike);
+    if (programmaticUpdateRef.current) {
+      programmaticUpdateRef.current = false;
+      return; // this update came from the matcher itself — don't re-trigger matching
+    }
+    setReferenceLeg("call");
+    if (!autoMatchEnabled || !chainData) return;
+    const contract = chainData.calls.find((c) => c.strike === parseFloat(strike));
+    if (contract?.premium === undefined) return;
+    setField("callPremium")(String(contract.premium));
+    runMatch("call", parseFloat(strike), contract.premium, chainData);
+  };
+
+  const handleSelectPutStrike = (strike: string) => {
+    setMarginField("putStrike")(strike);
+    if (programmaticUpdateRef.current) {
+      programmaticUpdateRef.current = false;
+      return;
+    }
+    setReferenceLeg("put");
+    if (!autoMatchEnabled || !chainData) return;
+    const contract = chainData.puts.find((c) => c.strike === parseFloat(strike));
+    if (contract?.premium === undefined) return;
+    setField("putPremium")(String(contract.premium));
+    runMatch("put", parseFloat(strike), contract.premium, chainData);
+  };
+
+  const callPremiumNum = parseFloat(inputs.callPremium);
+  const putPremiumNum = parseFloat(inputs.putPremium);
+  const premiumDifference = Number.isFinite(callPremiumNum) && Number.isFinite(putPremiumNum) ? Math.abs(callPremiumNum - putPremiumNum) : null;
+  const bufferNum = parseFloat(matchingBuffer);
+  const withinBuffer = premiumDifference !== null && Number.isFinite(bufferNum) ? premiumDifference <= bufferNum : null;
 
   const riskResult = useMemo(
     () =>
@@ -228,6 +300,20 @@ export function MinLeverageCalculator() {
             value={marginInputs.manualDaysToExpiry}
             onChange={setMarginField("manualDaysToExpiry")}
           />
+
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted dark:text-ink-muted-dark mb-1.5 mt-4">
+            Auto-Match Premium
+          </div>
+          <label className="flex items-center gap-2 mb-3 text-[12.5px] text-ink dark:text-ink-dark">
+            <input type="checkbox" checked={autoMatchEnabled} onChange={(e) => setAutoMatchEnabled(e.target.checked)} />
+            Auto-match opposite leg by closest live premium
+          </label>
+          <NumberField
+            label="Premium Matching Buffer"
+            unit="$ — prefer a different strike within this buffer"
+            value={matchingBuffer}
+            onChange={setMatchingBuffer}
+          />
         </div>
 
         <div>
@@ -237,7 +323,23 @@ export function MinLeverageCalculator() {
             <ErrorBanner message={marginResult.error} />
           ) : (
             <>
-              <div className="rounded-lg border border-line dark:border-line-dark bg-result dark:bg-result-dark px-3.5 pt-3.5 pb-1.5">
+              <div className="rounded-lg border border-line dark:border-line-dark px-3.5 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted dark:text-ink-muted-dark mb-2">
+                  Premium Balance
+                </div>
+                <ResultRow label="CALL Premium" value={formatUSD(callPremiumNum)} />
+                <ResultRow label="PUT Premium" value={formatUSD(putPremiumNum)} />
+                <ResultRow label="Premium Difference" value={premiumDifference !== null ? formatUSD(premiumDifference) : "—"} />
+                <ResultRow label="Matching Buffer" value={formatUSD(bufferNum)} />
+                <ResultRow
+                  label="Status"
+                  value={withinBuffer === null ? "—" : withinBuffer ? "✓ Within Buffer" : "⚠ Outside Buffer"}
+                  tone={withinBuffer === false ? "risk" : withinBuffer === true ? "profit" : "neutral"}
+                />
+                <ResultRow label="Reference Leg" value={referenceLeg ? referenceLeg.toUpperCase() : "None yet"} />
+              </div>
+
+              <div className="rounded-lg border border-line dark:border-line-dark bg-result dark:bg-result-dark px-3.5 pt-3.5 pb-1.5 mt-3.5">
                 <ResultRow big label="Strategy" value={marginResult.value.strategy} />
                 <ResultRow
                   label="Expiry"
@@ -352,14 +454,15 @@ export function MinLeverageCalculator() {
         manualBtcIndexPrice={parseFloat(inputs.btcIndexPrice)}
         callStrike={marginInputs.callStrike}
         putStrike={marginInputs.putStrike}
-        onSelectCallStrike={setMarginField("callStrike")}
-        onSelectPutStrike={setMarginField("putStrike")}
+        onSelectCallStrike={handleSelectCallStrike}
+        onSelectPutStrike={handleSelectPutStrike}
         onUseLiveIndex={(price) => setField("btcIndexPrice")(String(price))}
         onUseLiveCallPremium={(premium) => setField("callPremium")(String(premium))}
         onUseLivePutPremium={(premium) => setField("putPremium")(String(premium))}
         onCallIvChange={setCallIvPct}
         onPutIvChange={setPutIvPct}
         onExpiryInfoChange={setExpirySettlementMs}
+        onChainDataChange={handleChainDataChange}
         resetSignal={panelResetSignal}
       />
     </CardShell>

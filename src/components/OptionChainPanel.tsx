@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Info, RotateCw } from "lucide-react";
 import { useOptionChain } from "../hooks/useOptionChain";
 import { buildStrikeLadder, classifyStrike, findATMStrikes, type OptionSide } from "../lib/optionChainClassification";
-import { extractLiveIndexPrice, type OptionContract } from "../lib/deltaApi";
+import { extractLiveIndexPrice, type OptionChain, type OptionContract } from "../lib/deltaApi";
 import { formatExpiryLabel, formatNumber, formatRelativeTime, formatUSD } from "../lib/format";
 
 interface OptionChainPanelProps {
@@ -19,6 +19,8 @@ interface OptionChainPanelProps {
   onPutIvChange: (ivPct: number | null) => void;
   /** Fired whenever the selected expiry's precise settlement timestamp is known/changes. */
   onExpiryInfoChange: (settlementMs: number | null) => void;
+  /** Fired whenever the full fetched chain changes (new data, new expiry, or cleared) — lets the parent run its own logic (e.g. premium matching) against the same data without a second fetch. */
+  onChainDataChange: (chain: OptionChain | null) => void;
   /** Bumped by the parent's Reset button — resets this panel's own toggles without discarding the cached chain. */
   resetSignal: number;
 }
@@ -39,6 +41,7 @@ export function OptionChainPanel({
   onCallIvChange,
   onPutIvChange,
   onExpiryInfoChange,
+  onChainDataChange,
   resetSignal,
 }: OptionChainPanelProps) {
   const {
@@ -52,6 +55,11 @@ export function OptionChainPanel({
     setSelectedExpiry,
     refresh,
   } = useOptionChain();
+
+  useEffect(() => {
+    onChainDataChange(chain);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chain]);
 
   const [useLiveIndex, setUseLiveIndex] = useState(false);
   const [useLiveCallPremium, setUseLiveCallPremium] = useState(false);

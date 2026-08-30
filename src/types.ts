@@ -252,3 +252,85 @@ export interface DeltaMarginResult {
   exchangeMinLeverage: number;
   minUsableLeverage: number;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Defined-Risk Option Spread Calculator (Calculator 4) — a generic
+   two-leg payoff engine (src/lib/optionPayoffEngine.ts) composed with
+   the shared Delta fee module (src/lib/deltaFees.ts). No SL/TP inputs —
+   risk comes from the capped spread payoff itself.
+   ──────────────────────────────────────────────────────────────────────── */
+
+export interface SpreadLegInputs {
+  action: "buy" | "sell";
+  type: "call" | "put";
+  strike: string;
+  premium: string;
+}
+
+export interface SpreadCalculatorInputs {
+  capital: string;
+  riskPct: string;
+  usdInr: string;
+  contractSize: string;
+  btcIndexPrice: string;
+  leg1: SpreadLegInputs;
+  leg2: SpreadLegInputs;
+  rewardMultiple: string;
+  margin: string;
+  exchangeMinLeverage: string;
+  feeRatePct: string;
+  premiumCapPct: string;
+  gstPct: string;
+}
+
+export interface SpreadLegValue {
+  action: "buy" | "sell";
+  type: "call" | "put";
+  strike: number;
+  premiumUSD: number;
+}
+
+export interface SpreadCalculatorValues {
+  capital: number;
+  riskPct: number;
+  usdInr: number;
+  contractSize: number;
+  btcIndexPriceUSD: number;
+  leg1: SpreadLegValue;
+  leg2: SpreadLegValue;
+  rewardMultiple: number;
+  marginUSD: number;
+  exchangeMinLeverage: number;
+  feeRatePct: number;
+  premiumCapPct: number;
+  gstPct: number;
+}
+
+export interface SpreadCalculatorResult {
+  strategy: "BULL CALL SPREAD" | "BEAR PUT SPREAD" | "BULL PUT SPREAD" | "BEAR CALL SPREAD" | "CUSTOM TWO-LEG STRATEGY";
+  netPremiumUSD: number;
+  isNetDebit: boolean;
+  breakEvens: number[];
+  maxSpreads: number;
+  riskBudgetINR: number;
+  riskBudgetUSD: number;
+  leg1FeeUSD: number;
+  leg2FeeUSD: number;
+  totalFeesUSD: number;
+  maxProfitUSD: number;
+  maxProfitINR: number;
+  maxLossUSD: number;
+  maxLossINR: number;
+  theoreticalRewardMultiple: number;
+  targetProfitUSD: number;
+  targetProfitINR: number;
+  targetExceedsTheoretical: boolean;
+  estimatedRequiredMarginUSD: number;
+  marginUSD: number;
+  combinedPositionNotionalUSD: number;
+  theoreticalLeverage: number;
+  exchangeMinLeverage: number;
+  minUsableLeverage: number;
+  leg1FeeBreakdown: import("./lib/deltaFees").DeltaFeeBreakdown;
+  leg2FeeBreakdown: import("./lib/deltaFees").DeltaFeeBreakdown;
+}

@@ -1,6 +1,7 @@
 import { PremiumCalculator } from "./components/PremiumCalculator";
 import { LotsCalculator } from "./components/LotsCalculator";
 import { MinLeverageCalculator } from "./components/MinLeverageCalculator";
+import { SpreadCalculator } from "./components/SpreadCalculator";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { useTheme } from "./hooks/useTheme";
 
@@ -26,6 +27,7 @@ export default function App() {
           <PremiumCalculator />
           <LotsCalculator />
           <MinLeverageCalculator />
+          <SpreadCalculator />
         </main>
 
         <footer className="text-[10.5px] leading-relaxed text-ink-faint dark:text-ink-faint-dark text-center max-w-[640px] mx-auto mt-7">

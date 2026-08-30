@@ -1,7 +1,7 @@
 # Strangle Position Sizer
 
-A minimal, fully client-side risk-sizing calculator suite for short
-strangle positions on Delta Exchange BTC options. Three calculators:
+A minimal, fully client-side risk-sizing calculator suite for BTC
+options on Delta Exchange. Four calculators:
 
 - **Premium Calculator** — given capital, risk %, fees, stop loss %, and
   number of contracts, computes the maximum premium you can sell per leg.
@@ -17,17 +17,28 @@ strangle positions on Delta Exchange BTC options. Three calculators:
   used only after lot sizing to compute leverage against your entered
   margin, floored at a configurable exchange minimum (default 1×).
   Also shows maximum profit/loss, risk:reward, break-evens, strategy
-  (strangle vs. straddle) and same-day-expiry handling, plus a live BTC
-  option chain panel (Delta Exchange India public API) for strike
-  classification (ATM / ITM N / OTM N) and premium/IV auto-fill — see
-  "Option chain integration" below for important caveats.
+  (strangle vs. straddle), same-day-expiry handling, and an **auto-match**
+  feature that finds the opposite leg's strike with the closest live
+  premium whenever you pick one leg (see "Premium auto-matching" below) —
+  plus a live BTC option chain panel (Delta Exchange India public API)
+  for strike classification (ATM / ITM N / OTM N) and premium/IV
+  auto-fill — see "Option chain integration" below for important caveats.
+- **Defined-Risk Option Spread Calculator** — a generic two-leg options
+  payoff engine (not hard-coded per-strategy formulas) that auto-detects
+  Bull Call / Bear Put / Bull Put / Bear Call spreads or labels anything
+  else "Custom Two-Leg Strategy". Each leg is independently BUY/SELL,
+  CALL/PUT, with a strike selected from the same live Delta option chain
+  infrastructure as the third calculator. Computes exact max profit/loss
+  and break-even(s) from the payoff itself — never a stop-loss/take-profit
+  %, since a vertical spread's risk is already capped by construction.
 
 Everything recalculates instantly as you type. All position-sizing math
 happens locally in the browser — the only network calls this project
-makes are the Minimum Leverage Calculator's optional, read-only fetches
-to Delta Exchange India's public market-data API for strike
-classification (see below); nothing is ever sent to Delta, and the app
-works fully in manual mode if that fetch fails or is unavailable.
+makes are the option-chain-driven calculators' optional, read-only
+fetches to Delta Exchange India's public market-data API for strike
+classification and live premiums (see below); nothing is ever sent to
+Delta, and every calculator works fully in manual mode if that fetch
+fails or is unavailable.
 
 ## Stack
 
@@ -261,6 +272,41 @@ a note to verify on the exchange before trading — this calculator models
 Delta's documented methodology as accurately as public sources allow,
 but is not a substitute for the exchange's own live margin quote,
 especially for same-day expiry options where margin can move quickly.
+
+## Premium auto-matching (Minimum Leverage Calculator)
+
+`src/lib/premiumMatching.ts` — pure, no network dependency. When you pick
+a strike for one leg (the "reference leg"), it searches the live chain
+for the opposite-type contract whose premium is closest to the
+reference leg's premium, then auto-selects that strike.
+
+**Priority order** (verified against every worked example in the spec,
+including the trickiest one):
+1. Among strikes *different* from the reference leg, take whichever has
+   the smallest `|candidate premium − reference premium|`. If that's
+   within the buffer (default $5, editable), use it — **even if the
+   same-strike candidate is numerically even closer** — because this
+   calculator is for a strangle, and a different strike is preferred
+   whenever it's close enough.
+2. Otherwise, fall back to the same strike if it's within the buffer.
+3. Otherwise, nothing qualifies — return the single globally-closest
+   candidate (any strike) and flag it "Outside Buffer" rather than
+   leaving the opposite leg unset.
+
+**Loop prevention**: selecting CALL auto-sets PUT (or vice versa) by
+calling `setMarginField` directly — it never goes through the same
+`onSelectCallStrike`/`onSelectPutStrike` handlers a user's own dropdown
+interaction uses, so there's no path for an auto-set PUT to trigger
+another CALL auto-match. A `programmaticUpdateRef` guard is kept as a
+defensive belt-and-braces measure even though the current wiring makes
+a loop structurally impossible.
+
+**Manual override respected**: auto-matching only fires from the
+strike-selection handlers and from a chain/expiry refresh (re-matching
+the reference leg's current premium against the new chain) — it never
+runs on a timer or on unrelated re-renders, so a manually-chosen
+opposite strike is never silently overwritten by a stray premium
+refresh.
 
 ## Option chain integration
 
