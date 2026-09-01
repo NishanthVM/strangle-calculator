@@ -334,3 +334,79 @@ export interface SpreadCalculatorResult {
   leg1FeeBreakdown: import("./lib/deltaFees").DeltaFeeBreakdown;
   leg2FeeBreakdown: import("./lib/deltaFees").DeltaFeeBreakdown;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Lots Calculator (BUY/SELL) — replaces the original single-mode Lots
+   Calculator with dynamic BUY/SELL logic, live Delta option-chain strike
+   selection, Delta's real fee methodology (no more flat ₹ fee), and
+   margin/leverage. The original LotsCalculatorInputs/Values/Result types
+   above are left in place (still used by calculations.ts's
+   runLotsCalculator, now dead code for the UI but harmless) rather than
+   touched, so nothing about calculations.ts or PremiumCalculator.tsx is
+   affected by this change.
+   ──────────────────────────────────────────────────────────────────────── */
+
+export type TradeAction = "buy" | "sell";
+
+export interface LotsTradeCalculatorInputs {
+  tradeMode: TradeAction;
+  optionType: "call" | "put";
+  capital: string;
+  riskPct: string;
+  strike: string;
+  premium: string;
+  stopLossPct: string;
+  takeProfitPct: string;
+  usdInr: string;
+  contractSize: string;
+  btcIndexPrice: string;
+  feeRatePct: string;
+  premiumCapPct: string;
+  gstPct: string;
+  rewardMultiple: string;
+  margin: string;
+  exchangeMinLeverage: string;
+}
+
+export interface LotsTradeCalculatorValues {
+  tradeMode: TradeAction;
+  capital: number;
+  riskPct: number;
+  premiumUSD: number;
+  stopLossPct: number;
+  takeProfitPct: number;
+  usdInr: number;
+  contractSize: number;
+  btcIndexPriceUSD: number;
+  feeRatePct: number;
+  premiumCapPct: number;
+  gstPct: number;
+  rewardMultiple: number;
+  marginUSD: number;
+  exchangeMinLeverage: number;
+}
+
+export interface LotsTradeCalculatorResult {
+  riskBudgetINR: number;
+  riskBudgetUSD: number;
+  maxContracts: number;
+  premiumUSD: number;
+  positionNotionalUSD: number;
+  feeBreakdown: import("./lib/deltaFees").DeltaFeeBreakdown;
+  totalFeesUSD: number;
+  totalFeesINR: number;
+  calculatedRiskUSD: number;
+  calculatedRiskINR: number;
+  /** BUY mode only — the raw cost of the position before fees; kept separate from the risk budget per spec. */
+  optionCostUSD: number | null;
+  /** SELL mode only — theoretical maximum profit is capped at the credit received. Null in BUY mode (uncapped). */
+  theoreticalMaxProfitUSD: number | null;
+  theoreticalMaxProfitINR: number | null;
+  targetProfitUSD: number;
+  targetProfitINR: number;
+  targetExceedsTheoretical: boolean;
+  marginUSD: number;
+  theoreticalLeverage: number;
+  exchangeMinLeverage: number;
+  minUsableLeverage: number;
+}

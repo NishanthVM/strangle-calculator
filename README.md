@@ -1,13 +1,28 @@
 # Strangle Position Sizer
 
 A minimal, fully client-side risk-sizing calculator suite for BTC
-options on Delta Exchange. Four calculators:
+options on Delta Exchange, split across four pages (`react-router-dom`):
 
-- **Premium Calculator** — given capital, risk %, fees, stop loss %, and
-  number of contracts, computes the maximum premium you can sell per leg.
-- **Lots Calculator** — given capital, risk %, fees, premium, and stop
-  loss %, computes the maximum number of contracts you can sell per leg.
-- **Minimum Leverage Calculator** — a combined-risk position sizer for a
+- **`/` (Home)** — the Short Strangle / Short Straddle **Minimum
+  Leverage Calculator**, with nav cards at the bottom linking to the
+  other three.
+- **`/premium-calculator`** — given capital, risk %, fees, stop loss %,
+  and number of contracts, computes the maximum premium you can sell
+  per leg.
+- **`/lots-premium`** — the **Lots & Premium Calculator**, supporting
+  both BUY and SELL, CALL and PUT, with
+  live strike selection from Delta Exchange's actual option chain
+  (auto-filling premium). Fees now use Delta's real fee methodology
+  (order notional × rate, capped at % of premium, +GST — the same
+  engine Calculator 4 uses) instead of the old flat ₹150 default, which
+  has been removed entirely. SELL mode keeps the original SL%-based
+  worst-case risk model; BUY mode's risk is the premium cost + fees
+  (capital-bounded, since a long option's max loss is what you paid).
+  Adds Risk:Reward targeting (with a warning if the target exceeds a
+  capped trade's theoretical maximum), and margin/leverage — margin is
+  entered independently of capital and only used afterward to compute
+  leverage, floored at a configurable exchange minimum (default 1×).
+- **`/` (Home) — Minimum Leverage Calculator** — a combined-risk position sizer for a
   BTC short strangle/straddle: capital and Total Risk % determine the
   maximum lots per leg (a deterministic rule — the higher-premium leg is
   modeled as the one that gets stopped out, the lower-premium leg as the
@@ -23,7 +38,7 @@ options on Delta Exchange. Four calculators:
   plus a live BTC option chain panel (Delta Exchange India public API)
   for strike classification (ATM / ITM N / OTM N) and premium/IV
   auto-fill — see "Option chain integration" below for important caveats.
-- **Defined-Risk Option Spread Calculator** — a generic two-leg options
+- **`/defined-risk-spread`** — a generic two-leg options
   payoff engine (not hard-coded per-strategy formulas) that auto-detects
   Bull Call / Bear Put / Bull Put / Bear Call spreads or labels anything
   else "Custom Two-Leg Strategy". Each leg is independently BUY/SELL,
@@ -44,8 +59,35 @@ fails or is unavailable.
 
 - React 18 + TypeScript
 - Vite
+- react-router-dom (client-side routing across the four pages)
 - Tailwind CSS (class-based dark mode)
 - lucide-react for icons
+
+## Routing
+
+`src/App.tsx` wraps everything in a `BrowserRouter` with four routes:
+
+| Route | Page |
+|---|---|
+| `/` | Home — Minimum Leverage Calculator (short strangle/straddle) |
+| `/premium-calculator` | Premium Calculator |
+| `/lots-premium` | Lots & Premium Calculator (BUY/SELL) |
+| `/defined-risk-spread` | Defined-Risk Option Spread Calculator |
+
+Each page is a thin wrapper (`src/pages/*.tsx`) around the shared
+`Layout` component (header, theme toggle, footer disclaimer — extracted
+so it isn't duplicated four times) plus the one calculator that page
+shows. The home page adds `NavCard`s at the bottom linking to the other
+three.
+
+**Deployment note**: `npm run dev` and `npm run preview` both serve
+Vite's SPA fallback automatically, so refreshing any route (e.g.
+`/lots-premium`) works out of the box locally — verified directly
+against the preview server while building this. If you deploy to a
+static host (Netlify, S3, GitHub Pages, etc.), that host needs to be
+configured to serve `index.html` for unknown paths (a standard SPA
+rewrite rule) or direct navigation to a non-root route will 404 in
+production even though it works locally.
 
 ## Getting started
 
@@ -307,6 +349,20 @@ the reference leg's current premium against the new chain) — it never
 runs on a timer or on unrelated re-renders, so a manually-chosen
 opposite strike is never silently overwritten by a stray premium
 refresh.
+
+## Shared live BTC index
+
+`src/hooks/useLiveBtcIndex.ts` is the single derivation every calculator
+uses for "the live BTC index" — it's a thin wrapper around
+`useOptionChain()` (the same hook Calculator 3, Calculator 4, and now
+the Lots Calculator all call) plus `extractLiveIndexPrice()`. Because
+`useOptionChain()` already de-duplicates network requests for the same
+expiry via a module-level cache, every calculator reading the live index
+sees the exact same number from the exact same fetch — there's no
+separate index-fetching code path to drift out of sync. Each calculator
+still keeps its own manual BTC Index Price input and its own "Use Live
+Index" toggle (off by default), so enabling live data in one calculator
+never silently changes another calculator's manual value.
 
 ## Option chain integration
 

@@ -1,103 +1,238 @@
-import { useMemo, useState } from "react";
-import { Info } from "lucide-react";
+import { useState } from "react";
 import { CardShell } from "./CardShell";
 import { NumberField } from "./NumberField";
 import { ResultRow } from "./ResultRow";
 import { ErrorBanner } from "./ErrorBanner";
-import { runLotsCalculator } from "../lib/calculations";
-import { formatBTC, formatNumber, formatUSD } from "../lib/format";
-import type { LotsCalculatorInputs } from "../types";
+import { LotsStrikeSelector } from "./LotsStrikeSelector";
+import { runLotsTradeCalculator } from "../lib/lotsTradeCalculations";
+import { formatINR, formatNumber, formatUSD } from "../lib/format";
+import type { LotsTradeCalculatorInputs, TradeAction } from "../types";
 
-const DEFAULTS: LotsCalculatorInputs = {
+const DEFAULTS: LotsTradeCalculatorInputs = {
+  tradeMode: "sell",
+  optionType: "call",
   capital: "100000",
   riskPct: "1",
-  fees: "150",
+  strike: "100000",
   premium: "25",
   stopLossPct: "400",
   takeProfitPct: "90",
   usdInr: "85",
   contractSize: "0.001",
-  leverage: "200",
+  btcIndexPrice: "100000",
+  feeRatePct: "0.01",
+  premiumCapPct: "3.5",
+  gstPct: "18",
+  rewardMultiple: "2",
+  margin: "10",
+  exchangeMinLeverage: "1",
 };
 
 export function LotsCalculator() {
-  const [inputs, setInputs] = useState<LotsCalculatorInputs>(DEFAULTS);
+  const [inputs, setInputs] = useState<LotsTradeCalculatorInputs>(DEFAULTS);
+  const [useLiveIndex, setUseLiveIndex] = useState(false);
+  const [liveIndex, setLiveIndex] = useState<number | null>(null);
 
-  const setField = (key: keyof LotsCalculatorInputs) => (value: string) =>
+  const setField = (key: keyof LotsTradeCalculatorInputs) => (value: string) =>
     setInputs((current) => ({ ...current, [key]: value }));
 
-  const result = useMemo(
-    () =>
-      runLotsCalculator({
-        capital: parseFloat(inputs.capital),
-        riskPct: parseFloat(inputs.riskPct),
-        fees: parseFloat(inputs.fees),
-        premiumUSD: parseFloat(inputs.premium),
-        stopLossPct: parseFloat(inputs.stopLossPct),
-        takeProfitPct: parseFloat(inputs.takeProfitPct),
-        usdInr: parseFloat(inputs.usdInr),
-        contractSize: parseFloat(inputs.contractSize),
-      }),
-    [inputs]
-  );
+  const effectiveBtcIndex = useLiveIndex && liveIndex !== null ? liveIndex : parseFloat(inputs.btcIndexPrice);
+
+  const result = runLotsTradeCalculator({
+    tradeMode: inputs.tradeMode,
+    capital: parseFloat(inputs.capital),
+    riskPct: parseFloat(inputs.riskPct),
+    premiumUSD: parseFloat(inputs.premium),
+    stopLossPct: parseFloat(inputs.stopLossPct),
+    takeProfitPct: parseFloat(inputs.takeProfitPct),
+    usdInr: parseFloat(inputs.usdInr),
+    contractSize: parseFloat(inputs.contractSize),
+    btcIndexPriceUSD: effectiveBtcIndex,
+    feeRatePct: parseFloat(inputs.feeRatePct),
+    premiumCapPct: parseFloat(inputs.premiumCapPct),
+    gstPct: parseFloat(inputs.gstPct),
+    rewardMultiple: parseFloat(inputs.rewardMultiple),
+    marginUSD: parseFloat(inputs.margin),
+    exchangeMinLeverage: parseFloat(inputs.exchangeMinLeverage),
+  });
 
   return (
     <CardShell
       title="Lots Calculator"
-      subtitle="Maximum contracts per leg for your risk budget"
-      onReset={() => setInputs(DEFAULTS)}
+      subtitle="BUY or SELL, CALL or PUT — maximum contracts for your risk budget, live from Delta Exchange"
+      onReset={() => {
+        setInputs(DEFAULTS);
+        setUseLiveIndex(false);
+      }}
     >
-      <NumberField label="Capital" unit="₹" value={inputs.capital} onChange={setField("capital")} />
-      <NumberField label="Maximum Daily Risk" unit="%" value={inputs.riskPct} onChange={setField("riskPct")} />
-      <NumberField label="Fees / Brokerage" unit="₹" value={inputs.fees} onChange={setField("fees")} />
-      <NumberField label="Premium per Leg" unit="$" value={inputs.premium} onChange={setField("premium")} />
-      <NumberField label="Stop Loss" unit="%" value={inputs.stopLossPct} onChange={setField("stopLossPct")} />
-      <NumberField label="Take Profit" unit="%" value={inputs.takeProfitPct} onChange={setField("takeProfitPct")} />
-      <NumberField label="USD / INR" unit="" value={inputs.usdInr} onChange={setField("usdInr")} />
-      <NumberField
-        label="Contract Size"
-        unit="BTC"
-        value={inputs.contractSize}
-        onChange={setField("contractSize")}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <select
+          value={inputs.tradeMode}
+          onChange={(e) => setField("tradeMode")(e.target.value as TradeAction)}
+          className="rounded-md border border-line dark:border-line-dark bg-field dark:bg-field-dark px-2.5 py-2 text-[13px] text-ink dark:text-ink-dark"
+        >
+          <option value="buy">BUY</option>
+          <option value="sell">SELL</option>
+        </select>
+        <select
+          value={inputs.optionType}
+          onChange={(e) => setField("optionType")(e.target.value as "call" | "put")}
+          className="rounded-md border border-line dark:border-line-dark bg-field dark:bg-field-dark px-2.5 py-2 text-[13px] text-ink dark:text-ink-dark"
+        >
+          <option value="call">CALL</option>
+          <option value="put">PUT</option>
+        </select>
+      </div>
+
+      <LotsStrikeSelector
+        optionType={inputs.optionType}
+        strike={inputs.strike}
+        premium={inputs.premium}
+        btcIndexPrice={effectiveBtcIndex}
+        onStrikeChange={setField("strike")}
+        onPremiumChange={setField("premium")}
+        onLiveIndexChange={setLiveIndex}
       />
-      <NumberField label="Leverage" unit="×" value={inputs.leverage} onChange={setField("leverage")} />
+
+      <label className="flex items-center gap-2 mb-3 text-[12px] text-ink dark:text-ink-dark">
+        <input
+          type="checkbox"
+          checked={useLiveIndex}
+          onChange={(e) => setUseLiveIndex(e.target.checked)}
+          disabled={liveIndex === null}
+        />
+        Use Live BTC Index
+        {liveIndex !== null && (
+          <span className="text-ink-faint dark:text-ink-faint-dark font-mono">({formatUSD(liveIndex, 0)})</span>
+        )}
+      </label>
+
+      <NumberField
+        label="BTC Index Price"
+        unit="$ — manual"
+        value={inputs.btcIndexPrice}
+        onChange={setField("btcIndexPrice")}
+      />
+      <NumberField label="Capital" unit="₹" value={inputs.capital} onChange={setField("capital")} />
+      <NumberField label="Risk" unit="%" value={inputs.riskPct} onChange={setField("riskPct")} />
+      {inputs.tradeMode === "sell" && (
+        <>
+          <NumberField label="Stop Loss" unit="%" value={inputs.stopLossPct} onChange={setField("stopLossPct")} />
+          <NumberField label="Take Profit" unit="%" value={inputs.takeProfitPct} onChange={setField("takeProfitPct")} />
+        </>
+      )}
+      <NumberField label="USD / INR" unit="" value={inputs.usdInr} onChange={setField("usdInr")} />
+      <NumberField label="Contract Size" unit="BTC" value={inputs.contractSize} onChange={setField("contractSize")} />
+      <NumberField
+        label="Delta Exchange Fee Rate"
+        unit="% — estimate"
+        value={inputs.feeRatePct}
+        onChange={setField("feeRatePct")}
+      />
+      <NumberField
+        label="Premium Cap"
+        unit="% — estimate"
+        value={inputs.premiumCapPct}
+        onChange={setField("premiumCapPct")}
+      />
+      <NumberField label="GST" unit="% — estimate" value={inputs.gstPct} onChange={setField("gstPct")} />
+      <NumberField
+        label="Risk : Reward Target"
+        unit="→ 1 : X"
+        value={inputs.rewardMultiple}
+        onChange={setField("rewardMultiple")}
+      />
+      <NumberField
+        label="Margin Available / Required"
+        unit="$ — independent of capital"
+        value={inputs.margin}
+        onChange={setField("margin")}
+      />
+      <NumberField
+        label="Exchange Minimum Leverage"
+        unit="×"
+        value={inputs.exchangeMinLeverage}
+        onChange={setField("exchangeMinLeverage")}
+      />
 
       {!result.ok ? (
         <ErrorBanner message={result.error} />
       ) : (
         <>
           <div className="rounded-lg border border-line dark:border-line-dark bg-result dark:bg-result-dark px-3.5 pt-3.5 pb-1.5 mt-1.5">
-            <ResultRow big label="Maximum Contracts / Leg" value={formatNumber(result.value.maxContracts)} />
-            <ResultRow label="BTC Quantity" value={formatBTC(result.value.btcQty)} />
+            <ResultRow big label="Maximum Lots" value={formatNumber(result.value.maxContracts)} />
             <ResultRow label="Premium" value={formatUSD(result.value.premiumUSD)} />
-            <ResultRow label="Take Profit Level" value={formatUSD(result.value.tpLevelUSD)} tone="profit" />
-            <ResultRow label="Stop Loss Level" value={formatUSD(result.value.slLevelUSD)} tone="risk" />
+            <ResultRow label="Position Notional" value={formatUSD(result.value.positionNotionalUSD)} />
+            {result.value.optionCostUSD !== null && (
+              <ResultRow label="Option Cost" value={formatUSD(result.value.optionCostUSD)} />
+            )}
+            <ResultRow
+              label="Total Fees"
+              value={`${formatUSD(result.value.totalFeesUSD)} · ${formatINR(result.value.totalFeesINR)}`}
+            />
           </div>
 
           <div className="rounded-lg border border-line dark:border-line-dark px-3.5 py-3 mt-3.5">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Info size={12.5} className="text-ink-faint dark:text-ink-faint-dark" />
-              <span className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-muted dark:text-ink-muted-dark">
-                Short Strangle
-              </span>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted dark:text-ink-muted-dark mb-2">
+              Risk : Reward
             </div>
-            <div className="flex justify-between text-[13px] font-mono py-0.5 text-ink dark:text-ink-dark">
-              <span className="text-ink-muted dark:text-ink-muted-dark font-sans">CALL contracts</span>
-              <span>{formatNumber(result.value.maxContracts)}</span>
+            <ResultRow
+              label="Risk Budget"
+              value={`${formatINR(result.value.riskBudgetINR)} / ${formatUSD(result.value.riskBudgetUSD)}`}
+            />
+            <ResultRow
+              label="Calculated Risk"
+              value={`${formatUSD(result.value.calculatedRiskUSD)} · ${formatINR(result.value.calculatedRiskINR)}`}
+              tone="risk"
+            />
+            {result.value.theoreticalMaxProfitUSD !== null ? (
+              <ResultRow
+                label="Theoretical Max Profit"
+                value={`${formatUSD(result.value.theoreticalMaxProfitUSD)} · ${formatINR(result.value.theoreticalMaxProfitINR ?? 0)}`}
+                tone="profit"
+              />
+            ) : (
+              <ResultRow label="Profit Potential" value="Uncapped (long option)" tone="profit" />
+            )}
+            <ResultRow
+              label={result.value.theoreticalMaxProfitUSD !== null ? "Target Profit" : "RR-Based Target Profit"}
+              value={`${formatUSD(result.value.targetProfitUSD)} · ${formatINR(result.value.targetProfitINR)}`}
+              tone={result.value.targetExceedsTheoretical ? "risk" : "profit"}
+            />
+            <ResultRow label="Risk : Reward" value={`1 : ${formatNumber(parseFloat(inputs.rewardMultiple), 2)}`} />
+            {result.value.targetExceedsTheoretical && (
+              <ErrorBanner message="WARNING: Target profit exceeds the theoretical maximum profit of this trade." />
+            )}
+          </div>
+
+          <div className="rounded-lg border border-line dark:border-line-dark px-3.5 py-3 mt-3.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted dark:text-ink-muted-dark mb-2">
+              Margin &amp; Leverage — Estimated
             </div>
-            <div className="flex justify-between text-[13px] font-mono py-0.5 text-ink dark:text-ink-dark">
-              <span className="text-ink-muted dark:text-ink-muted-dark font-sans">PUT contracts</span>
-              <span>{formatNumber(result.value.maxContracts)}</span>
-            </div>
-            <div className="flex justify-between text-[13px] font-mono font-semibold py-0.5 pt-1.5 mt-0.5 border-t border-line dark:border-line-dark text-ink dark:text-ink-dark">
-              <span className="text-ink-muted dark:text-ink-muted-dark font-sans font-medium">Total contracts</span>
-              <span>{formatNumber(result.value.maxContracts * 2)}</span>
-            </div>
-            <p className="text-[11px] leading-snug text-ink-faint dark:text-ink-faint-dark mt-2">
-              Position size is per leg, based on a {inputs.stopLossPct}% stop loss on each leg individually — not on
-              the combined strangle.
+            <ResultRow label="Margin Entered" value={formatUSD(result.value.marginUSD)} />
+            <ResultRow label="Theoretical Required Leverage" value={`${formatNumber(result.value.theoreticalLeverage, 2)}×`} />
+            <ResultRow label="Exchange Minimum" value={`${formatNumber(result.value.exchangeMinLeverage, 2)}×`} />
+            <ResultRow big label="Minimum Usable Leverage" value={`${formatNumber(result.value.minUsableLeverage, 2)}×`} />
+            <p className="text-[10.5px] leading-snug text-ink-faint dark:text-ink-faint-dark mt-2">
+              This is the bare minimum leverage needed to carry the calculated position with your entered margin —
+              not the maximum leverage Delta Exchange allows. Margin never affects the lot calculation above.
             </p>
           </div>
+
+          <details className="mt-3.5">
+            <summary className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-muted dark:text-ink-muted-dark cursor-pointer select-none">
+              Fee breakdown
+            </summary>
+            <div className="mt-2 font-mono text-xs text-ink dark:text-ink-dark space-y-0.5">
+              <div>Option Premium: {formatUSD(result.value.feeBreakdown.optionPremiumUSD)}</div>
+              <div>Order Notional: {formatUSD(result.value.feeBreakdown.orderNotionalUSD)}</div>
+              <div>3.5% Premium Cap: {formatUSD(result.value.feeBreakdown.premiumCapUSD)}</div>
+              <div>Trading Fee: {formatUSD(result.value.feeBreakdown.tradingFeeUSD)}</div>
+              <div>Effective Trading Fee: {formatUSD(result.value.feeBreakdown.effectiveFeeUSD)}</div>
+              <div>GST: {formatUSD(result.value.feeBreakdown.gstUSD)}</div>
+              <div className="font-semibold">Total Fee: {formatUSD(result.value.feeBreakdown.totalFeeUSD)}</div>
+            </div>
+          </details>
         </>
       )}
     </CardShell>
