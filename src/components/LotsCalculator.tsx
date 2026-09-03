@@ -30,13 +30,25 @@ const DEFAULTS: LotsTradeCalculatorInputs = {
 
 export function LotsCalculator() {
   const [inputs, setInputs] = useState<LotsTradeCalculatorInputs>(DEFAULTS);
-  const [useLiveIndex, setUseLiveIndex] = useState(false);
+  const [btcIndexOverridden, setBtcIndexOverridden] = useState(false);
   const [liveIndex, setLiveIndex] = useState<number | null>(null);
 
   const setField = (key: keyof LotsTradeCalculatorInputs) => (value: string) =>
     setInputs((current) => ({ ...current, [key]: value }));
 
-  const effectiveBtcIndex = useLiveIndex && liveIndex !== null ? liveIndex : parseFloat(inputs.btcIndexPrice);
+  const setBtcIndexManually = (value: string) => {
+    setBtcIndexOverridden(true);
+    setField("btcIndexPrice")(value);
+  };
+
+  const handleLiveIndexChange = (price: number | null) => {
+    setLiveIndex(price);
+    if (price !== null && !btcIndexOverridden) {
+      setField("btcIndexPrice")(String(price));
+    }
+  };
+
+  const effectiveBtcIndex = parseFloat(inputs.btcIndexPrice);
 
   const result = runLotsTradeCalculator({
     tradeMode: inputs.tradeMode,
@@ -62,7 +74,7 @@ export function LotsCalculator() {
       subtitle="BUY or SELL, CALL or PUT — maximum contracts for your risk budget, live from Delta Exchange"
       onReset={() => {
         setInputs(DEFAULTS);
-        setUseLiveIndex(false);
+        setBtcIndexOverridden(false);
       }}
     >
       <div className="grid grid-cols-2 gap-2 mb-3">
@@ -91,28 +103,26 @@ export function LotsCalculator() {
         btcIndexPrice={effectiveBtcIndex}
         onStrikeChange={setField("strike")}
         onPremiumChange={setField("premium")}
-        onLiveIndexChange={setLiveIndex}
+        onLiveIndexChange={handleLiveIndexChange}
       />
-
-      <label className="flex items-center gap-2 mb-3 text-[12px] text-ink dark:text-ink-dark">
-        <input
-          type="checkbox"
-          checked={useLiveIndex}
-          onChange={(e) => setUseLiveIndex(e.target.checked)}
-          disabled={liveIndex === null}
-        />
-        Use Live BTC Index
-        {liveIndex !== null && (
-          <span className="text-ink-faint dark:text-ink-faint-dark font-mono">({formatUSD(liveIndex, 0)})</span>
-        )}
-      </label>
 
       <NumberField
         label="BTC Index Price"
-        unit="$ — manual"
+        unit={btcIndexOverridden ? "$ — manual" : liveIndex !== null ? "$ — live, auto-synced" : "$ — manual"}
         value={inputs.btcIndexPrice}
-        onChange={setField("btcIndexPrice")}
+        onChange={setBtcIndexManually}
       />
+      {btcIndexOverridden && liveIndex !== null && (
+        <button
+          onClick={() => {
+            setBtcIndexOverridden(false);
+            setField("btcIndexPrice")(String(liveIndex));
+          }}
+          className="text-[10px] text-ink-faint dark:text-ink-faint-dark underline -mt-2 mb-2"
+        >
+          Resume live sync ({formatUSD(liveIndex, 0)})
+        </button>
+      )}
       <NumberField label="Capital" unit="₹" value={inputs.capital} onChange={setField("capital")} />
       <NumberField label="Risk" unit="%" value={inputs.riskPct} onChange={setField("riskPct")} />
       {inputs.tradeMode === "sell" && (

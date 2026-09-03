@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CardShell } from "./CardShell";
 import { NumberField } from "./NumberField";
 import { ResultRow } from "./ResultRow";
 import { ErrorBanner } from "./ErrorBanner";
 import { SpreadLegSelector } from "./SpreadLegSelector";
 import { runSpreadCalculator } from "../lib/spreadCalculations";
+import { useLiveBtcIndex } from "../hooks/useLiveBtcIndex";
 import { formatINR, formatNumber, formatUSD } from "../lib/format";
 import type { OptionAction, OptionType } from "../lib/optionPayoffEngine";
 import type { SpreadCalculatorInputs, SpreadLegInputs } from "../types";
@@ -27,9 +28,23 @@ const DEFAULTS: SpreadCalculatorInputs = {
 
 export function SpreadCalculator() {
   const [inputs, setInputs] = useState<SpreadCalculatorInputs>(DEFAULTS);
+  const [btcIndexOverridden, setBtcIndexOverridden] = useState(false);
+  const liveIndex = useLiveBtcIndex();
 
   const setField = (key: keyof Omit<SpreadCalculatorInputs, "leg1" | "leg2">) => (value: string) =>
     setInputs((current) => ({ ...current, [key]: value }));
+
+  const setBtcIndexManually = (value: string) => {
+    setBtcIndexOverridden(true);
+    setField("btcIndexPrice")(value);
+  };
+
+  useEffect(() => {
+    if (liveIndex.price !== null && !btcIndexOverridden) {
+      setField("btcIndexPrice")(String(liveIndex.price));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveIndex.price, btcIndexOverridden]);
 
   const setLegField =
     (legKey: "leg1" | "leg2") =>
@@ -67,7 +82,10 @@ export function SpreadCalculator() {
     <CardShell
       title="Defined-Risk Option Spread Calculator"
       subtitle="Bull Call / Bear Put / Bull Put / Bear Call spreads, or any custom two-leg combination — risk comes from the actual capped payoff, not a stop-loss %"
-      onReset={() => setInputs(DEFAULTS)}
+      onReset={() => {
+        setInputs(DEFAULTS);
+        setBtcIndexOverridden(false);
+      }}
       fullWidth
     >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
@@ -110,9 +128,9 @@ export function SpreadCalculator() {
           />
           <NumberField
             label="BTC Index Price"
-            unit="$"
+            unit={btcIndexOverridden ? "$ — manual" : liveIndex.price !== null ? "$ — live, auto-synced" : "$ — manual"}
             value={inputs.btcIndexPrice}
-            onChange={setField("btcIndexPrice")}
+            onChange={setBtcIndexManually}
           />
           <NumberField
             label="Risk : Reward Target"

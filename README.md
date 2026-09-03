@@ -70,15 +70,17 @@ fails or is unavailable.
 | Route | Page |
 |---|---|
 | `/` | Home — Minimum Leverage Calculator (short strangle/straddle) |
-| `/premium-calculator` | Premium Calculator |
-| `/lots-premium` | Lots & Premium Calculator (BUY/SELL) |
+| `/premium-calculator` | Premium Calculator (BUY/SELL, CALL/PUT, live from Delta) |
+| `/lots-premium` | Lots & Premium Calculator (BUY/SELL, CALL/PUT, live from Delta) |
 | `/defined-risk-spread` | Defined-Risk Option Spread Calculator |
 
 Each page is a thin wrapper (`src/pages/*.tsx`) around the shared
 `Layout` component (header, theme toggle, footer disclaimer — extracted
 so it isn't duplicated four times) plus the one calculator that page
-shows. The home page adds `NavCard`s at the bottom linking to the other
-three.
+shows. Every page renders `OtherCalculatorsNav` at the bottom — a
+strip linking to the other three calculators, with the current page
+shown as an inert/active label rather than a link (verified this
+appears on all four pages, not just Home).
 
 **Deployment note**: `npm run dev` and `npm run preview` both serve
 Vite's SPA fallback automatically, so refreshing any route (e.g.
