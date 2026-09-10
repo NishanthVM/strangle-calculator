@@ -1,7 +1,8 @@
 import { Link, useLocation } from "react-router-dom";
 
 const PAGES = [
-  { to: "/", label: "Minimum Leverage" },
+  { to: "/", label: "Live Trade Execution" },
+  { to: "/minimum-leverage", label: "Minimum Leverage" },
   { to: "/premium-calculator", label: "Premium Calculator" },
   { to: "/lots-premium", label: "Lots Calculator" },
   { to: "/defined-risk-spread", label: "Defined-Risk Spreads" },

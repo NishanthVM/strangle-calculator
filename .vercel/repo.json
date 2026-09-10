@@ -1,0 +1,11 @@
+{
+  "remoteName": "origin",
+  "projects": [
+    {
+      "id": "prj_3uj1exgZ5YtFGwL08TDI7EiMl86y",
+      "name": "strangle-calculator",
+      "directory": ".",
+      "orgId": "team_JjoGkDcAKZbtcrgHk9NWvxuq"
+    }
+  ]
+}

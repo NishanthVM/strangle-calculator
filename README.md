@@ -59,39 +59,43 @@ fails or is unavailable.
 
 - React 18 + TypeScript
 - Vite
-- react-router-dom (client-side routing across the four pages)
+- react-router-dom (client-side routing across the five pages)
 - Tailwind CSS (class-based dark mode)
 - lucide-react for icons
+- Vercel Serverless Functions (`/api`) — the only place Delta API
+  credentials are ever used for signing; see "Live Trade Execution &
+  Vercel deployment" below
 
 ## Routing
 
-`src/App.tsx` wraps everything in a `BrowserRouter` with four routes:
+`src/App.tsx` wraps everything in a `BrowserRouter` with five routes:
 
 | Route | Page |
 |---|---|
-| `/` | Home — Minimum Leverage Calculator (short strangle/straddle) |
+| `/` | **Live Trade Execution** (home) — Smart Short Strangle, real order placement, password-gated |
+| `/minimum-leverage` | Minimum Leverage Calculator (short strangle/straddle sizing) |
 | `/premium-calculator` | Premium Calculator (BUY/SELL, CALL/PUT, live from Delta) |
 | `/lots-premium` | Lots & Premium Calculator (BUY/SELL, CALL/PUT, live from Delta) |
 | `/defined-risk-spread` | Defined-Risk Option Spread Calculator |
 
 Each page is a thin wrapper (`src/pages/*.tsx`) around the shared
 `Layout` component (header, theme toggle, footer disclaimer — extracted
-so it isn't duplicated four times) plus the one calculator that page
+so it isn't duplicated five times) plus the one calculator that page
 shows. Every page renders `OtherCalculatorsNav` at the bottom — a
-strip linking to the other three calculators, with the current page
-shown as an inert/active label rather than a link (verified this
-appears on all four pages, not just Home).
+strip linking to the other four pages, with the current page shown as
+an inert/active label rather than a link.
 
 **Deployment note**: `npm run dev` and `npm run preview` both serve
 Vite's SPA fallback automatically, so refreshing any route (e.g.
-`/lots-premium`) works out of the box locally — verified directly
-against the preview server while building this. If you deploy to a
-static host (Netlify, S3, GitHub Pages, etc.), that host needs to be
-configured to serve `index.html` for unknown paths (a standard SPA
-rewrite rule) or direct navigation to a non-root route will 404 in
-production even though it works locally.
+`/lots-premium`) works out of the box locally. On Vercel this is
+handled automatically for any SPA it detects — no extra rewrite config
+needed. (If you ever move to a different static host, that host would
+need an SPA rewrite rule for `index.html`.)
 
 ## Getting started
+
+The calculators (everything except Live Trade Execution) work with
+just:
 
 ```bash
 npm install
@@ -100,6 +104,21 @@ npm run dev
 
 Then open the printed local URL (typically `http://localhost:5173`).
 
+**Live Trade Execution needs the `/api` serverless functions running
+too** — plain `vite dev` does not execute them. Use the Vercel CLI for
+local development instead:
+
+```bash
+npm install -g vercel   # one-time
+vercel dev
+```
+
+This serves the frontend AND `/api/*` together on one local port, so
+relative fetches (`/api/delta/test-connection`, etc.) work exactly as
+they will in production. You'll need a `.env.local` with `APP_PASSWORD`
+and `SESSION_SECRET` set (see below) for `vercel dev` to authenticate
+you.
+
 ## Build for production
 
 ```bash
@@ -107,7 +126,224 @@ npm run build
 npm run preview   # serve the production build locally to check it
 ```
 
-The production build is emitted to `dist/`.
+The production build is emitted to `dist/`. This checks the frontend
+build only — `npm run preview` does not run the `/api` functions; use
+`vercel dev` (above) or an actual Vercel deployment to exercise those.
+
+## Live Trade Execution & Vercel deployment
+
+⚠️ **Read this whole section before using Live mode with a real
+account.** This is the one page in the app that can place real
+leveraged orders with real capital.
+
+### Verification status
+
+Everything in `api/_lib/deltaClient.js` was built from Delta's public
+documentation plus one concrete real-world data point (a Delta
+community forum post showing an actual "Signature Mismatch" error,
+whose payload revealed the true signature format). **This has never
+been executed against a real Delta account from the environment it was
+built in** — that sandbox had no network route to Delta's API at all.
+Test Connection and the DEMO environment (Delta's testnet) exist
+specifically so you can verify the signing/order code actually works
+before ever pointing it at your real account.
+
+### 1. Deploying to Vercel
+
+No separate backend server is required — `/api/*.js` are Vercel
+Serverless Functions, deployed automatically alongside the frontend
+when you deploy this repo to Vercel.
+
+1. Push this repo to GitHub.
+2. In Vercel: **New Project** → import the repo. Vercel auto-detects
+   the Vite frontend and the `/api` functions; no special build config
+   is needed.
+3. Before the first deploy (or right after, then redeploy), set the
+   environment variables below in **Project Settings → Environment
+   Variables**.
+4. Deploy.
+
+### 2. Required environment variables
+
+Set these in Vercel's dashboard (or `.env.local` for `vercel dev`) —
+**never** as `VITE_*` or with a `NEXT_PUBLIC_` prefix, since those
+prefixes are what makes a value get bundled into client-side JS and
+sent to every visitor's browser. Plain, unprefixed environment
+variables are only ever readable server-side, inside `/api/*.js`.
+
+| Variable | Purpose |
+|---|---|
+| `APP_PASSWORD` | The password that gates the whole Live Trade Execution page (see Authentication below). Pick something you don't reuse elsewhere. |
+| `SESSION_SECRET` | Random secret used to sign the login session cookie. Generate one with `openssl rand -hex 32` (or any long random string) — it doesn't need to be memorable, just unpredictable. |
+
+Your **Delta API key/secret are never set as environment variables at
+all** — you type them into the page itself each session (see below),
+and they're sent to `/api/delta/*` only for that one request.
+
+### 3. Authentication — who can use this page
+
+`api/_lib/auth.js` implements a minimal single-password gate:
+`AuthGate` (wrapping the Live Trade Execution page) checks
+`/api/auth/session` on load; if not authenticated, it shows a login
+form that posts to `/api/auth/login`, which checks the password against
+`APP_PASSWORD` and — only on success — sets an HttpOnly, `SameSite=Strict`
+signed session cookie (`api/_lib/auth.js`'s `createSessionCookie`).
+Every `/api/delta/*` route is wrapped in `requireAuth()`, which 401s
+immediately if that cookie is missing, invalid, or expired (12-hour
+expiry) — so knowing the Vercel URL alone is not enough to reach any
+Delta-touching endpoint, authenticated or not. The calculator pages
+(`/minimum-leverage`, `/premium-calculator`, etc.) don't call any
+private route, so they're not gated — only Live Trade Execution needs
+the app password.
+
+This is intentionally a single shared password for one operator, not a
+multi-user accounts system. If you need that later, `verifyPassword()`
+in `api/_lib/auth.js` is the one function to replace with a real user
+lookup — the cookie-signing mechanics around it don't need to change.
+
+### 4. Your Delta API key
+
+Delta Exchange India's **production** and **testnet** accounts are
+completely separate systems — a key from one will not authenticate on
+the other. Generate a key from whichever environment you intend to use:
+
+- **Production** (real account, real money): your normal Delta India
+  account → API Management.
+- **Testnet/DEMO**: a separate account at `testnet.delta.exchange` →
+  API Management there. This is the one to use first.
+
+Required permissions on the key: at minimum, trading (place/cancel
+orders) and read access to positions/orders. Consult Delta's current
+API-key permission UI for the exact scope names — this project doesn't
+prescribe a specific permission set beyond "enough to do what the page
+does" (`test-connection`, `positions`, `orders`, `place-strangle`,
+`close-leg`, `cancel-order` — see `api/delta/*.js`).
+
+### 5. REAL vs DEMO
+
+The Live Trade Execution page has an environment selector, defaulting
+to **REAL** per spec (🔴 LIVE — REAL ACCOUNT / 🟡 DEMO — TEST ACCOUNT),
+shown unmissably above the order button. REAL uses
+`api.india.delta.exchange`; DEMO uses Delta's testnet
+(`cdn-ind.testnet.deltaex.org`). Dry Run (see below) is a separate,
+independent toggle from REAL/DEMO — Dry Run stays fully safe regardless
+of which environment is selected, since it never calls a
+Delta-mutating route either way.
+
+**Recommended first-time flow**: DEMO + Dry Run off, smallest possible
+size, to prove the whole pipeline actually places and fills an order
+before ever switching to REAL.
+
+### 6. Using the live trading interface
+
+1. Log in with `APP_PASSWORD`.
+2. Enter your Delta API key/secret for the environment you want (kept
+   only in this page's React state — never written to disk, never
+   logged, cleared by the "Clear" button or a page refresh).
+3. Test Connection — read-only, safe to run repeatedly.
+4. The live BTC option chain loads with the nearest expiry
+   auto-selected (0DTE if one exists today, otherwise the next
+   available expiry — Delta doesn't need to be asked for "0DTE
+   specifically"; the nearest expiry in the chain already is 0DTE
+   whenever one exists).
+5. Select a CALL or PUT strike — the opposite leg auto-selects the
+   closest-premium candidate (`src/lib/premiumMatching.ts`, the same
+   algorithm the Minimum Leverage Calculator's premium-matching uses),
+   with a $-value buffer (default 5, editable) and a preference for a
+   *different* strike over the same one when both are within buffer —
+   because this is a strangle, not a straddle, by default.
+6. Review Calculated Leverage → Leverage Buffer → Total Leverage → 200×
+   execution cap → Executed Leverage (all shown separately, per the
+   spec's leverage-transparency requirement).
+7. Dry Run (default on) shows the exact payload with no network call.
+   Switch it off, check the REAL/DEMO-matching confirmation box, and
+   Place Order to actually submit.
+
+### 7. What "Executed Leverage" actually means
+
+`Calculated Leverage` (from the same risk/margin engine the Minimum
+Leverage Calculator uses) `+ Leverage Buffer` (your input, default 3×)
+`= Total Leverage`. If `Total Leverage > 200×`, `Executed Leverage` is
+capped at 200× — enforced **both** client-side (for display) and
+server-side in `api/delta/place-strangle.js` (never trust only the
+client for something that mutates a real account). Delta's actual
+per-product maximum leverage may be lower than 200× — this app doesn't
+currently fetch that live, so a request above Delta's real max will
+simply be rejected by Delta's own leverage-setting call, surfaced as an
+error rather than silently succeeded.
+
+### 8. Partial fills, TP/SL, and what's genuinely implemented
+
+- **Dashboard**: fixed cards (Overall MTM, CALL card, PUT card, Theoretical
+  Strangle) whose values update in place — never a JSON dump, never an
+  appended log line. Delta's `/v2/positions/margined` response (verified
+  against Delta's own docs) provides `size`, `entry_price`, `margin`,
+  `liquidation_price` directly; it does **not** include an
+  `unrealized_pnl` field, so UPnL is computed here
+  (`src/lib/positionNormalize.ts`) from entry price vs. the live mark
+  price already sourced from the option chain — not read from a Delta
+  field that doesn't exist in this endpoint.
+- **Closed-leg PnL**: when a leg's position size goes to zero, its last
+  computed UPnL is frozen and shown as "Realized PnL (approx., at
+  close)" — labeled *approx* because this build doesn't call Delta's
+  fills/orders endpoint for an exact realized-PnL figure; it's the best
+  available number from what's already wired up, not a fabricated one.
+- **Partial fills**: requested lots (from the sizing calculation) vs.
+  observed position size (from Delta) are shown side by side; a
+  mismatch triggers a visible warning rather than silently treating the
+  requested quantity as if it filled.
+- **TP/SL**: the 90%-decay target and 400% stop are *calculated*
+  correctly per leg from the actual filled entry price. They are
+  **not** automatically submitted as exchange-native bracket/reduce-only
+  exit orders in this build — that's a meaningful gap for a production
+  system, called out explicitly rather than silently shipped as if
+  complete.
+- **Live position updates**: ~2-second REST polling
+  (`/api/delta/positions`), not a private WebSocket feed. A real
+  authenticated WebSocket connection is substantially more complex to
+  get right (handshake, reconnect, sequencing) and — like everything
+  else touching Delta — could not be tested here. Polling is simpler,
+  fully inspectable, and was judged the safer trade-off. The dashboard
+  shows a live "● LIVE · Updated Xs ago" / "● STALE" indicator so this
+  is never presented as more real-time than it is.
+- **Refresh/reconnect recovery**: **not implemented.** The active-trade
+  state lives in React state only; refreshing the page loses it from
+  the UI (your actual position on Delta is of course unaffected — only
+  this page's knowledge of it). Reconstructing state from Delta's
+  positions/orders/fills on load is a real gap versus the original
+  spec, flagged here rather than glossed over.
+- **Duplicate-order protection**: each leg gets a unique
+  `client_order_id` (`STRANGLE_<timestamp>_CALL`/`_PUT`), but there's
+  no reconciliation-before-retry logic if a request times out
+  mid-flight — another real gap.
+
+### 9. Troubleshooting
+
+- **"Backend request failed" / JSON parse errors**: this version fetches
+  relative `/api/...` paths, so this class of error (pointing at the
+  wrong server) should no longer occur under `vercel dev` or on Vercel
+  itself — if you see it, `/api` probably isn't running (plain `vite
+  dev` doesn't serve it; use `vercel dev`).
+- **`invalid_api_key`**: almost always means environment mismatch — a
+  production key used against DEMO (testnet) or vice versa. They're
+  separate accounts with separate keys; see section 4.
+- **`invalid_contract`**: means the option chain and the order
+  placement were pointed at different environments — this was a real
+  bug, now fixed: `useOptionChain(useTestnet)` fetches strikes/product
+  IDs from whichever environment is currently selected (production or
+  testnet), matching the environment the order itself gets sent to.
+  Production and testnet are entirely separate product catalogs — the
+  same-looking strike has a different `product_id` in each. If you
+  still see this, double-check you didn't select a strike, *then*
+  switch REAL/DEMO without reselecting (switching environment now
+  clears the selected strikes automatically, precisely to prevent
+  this).
+- **"Signature Mismatch"**: Delta's error response includes the exact
+  `signature_data` string it expected in `error.context.signature_data`
+  — compare it byte-for-byte against what `sign()` in
+  `api/_lib/deltaClient.js` produces.
+- **401 from any `/api/delta/*` route**: your session expired (12h) or
+  you're not logged in — go back to `/` and log in again.
 
 ## Project structure
 
