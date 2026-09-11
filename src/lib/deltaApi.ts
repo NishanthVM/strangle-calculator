@@ -19,12 +19,7 @@
  * No API key/secret is used or requested — only public endpoints.
  */
 
-const PRODUCTION_BASE = "https://api.india.delta.exchange";
-const TESTNET_BASE = "https://cdn-ind.testnet.deltaex.org";
-
-function baseUrl(useTestnet?: boolean): string {
-  return useTestnet ? TESTNET_BASE : PRODUCTION_BASE;
-}
+const API_BASE = "https://api.india.delta.exchange";
 const FETCH_TIMEOUT_MS = 8000;
 
 export interface ApiResult<T> {
@@ -35,7 +30,6 @@ export interface ApiResult<T> {
 
 export interface OptionContract {
   symbol?: string;
-  productId?: number;
   strike: number;
   premium?: number; // mark price, best-effort
   spotPrice?: number; // underlying index price at time of quote, if present on the ticker
@@ -94,8 +88,8 @@ export interface ExpiryInfo {
   settlementMs: number;
 }
 
-export async function fetchBtcOptionExpiries(useTestnet?: boolean): Promise<ApiResult<ExpiryInfo[]>> {
-  const result = await fetchJson<{ result?: RawProduct[] }>(`${baseUrl(useTestnet)}/v2/products?contract_types=call_options,put_options`);
+export async function fetchBtcOptionExpiries(): Promise<ApiResult<ExpiryInfo[]>> {
+  const result = await fetchJson<{ result?: RawProduct[] }>(`${API_BASE}/v2/products?contract_types=call_options,put_options`);
   if (!result.ok || !result.data) return { ok: false, error: result.error ?? "No data returned" };
 
   const products = result.data.result ?? [];
@@ -134,7 +128,6 @@ export async function fetchBtcOptionExpiries(useTestnet?: boolean): Promise<ApiR
 
 interface RawTicker {
   symbol?: string;
-  product_id?: number;
   contract_type?: string;
   strike_price?: string | number;
   mark_price?: string | number;
@@ -156,7 +149,6 @@ function normalizeTicker(t: RawTicker): OptionContract | null {
   if (strike === undefined) return null;
   return {
     symbol: t.symbol,
-    productId: typeof t.product_id === "number" ? t.product_id : undefined,
     strike,
     premium: toNumber(t.mark_price) ?? toNumber(t.close_price),
     spotPrice: toNumber(t.spot_price),
@@ -171,8 +163,8 @@ function normalizeTicker(t: RawTicker): OptionContract | null {
  * Fetches the BTC call+put option chain for one expiry (format
  * "DD-MM-YYYY", as returned by fetchBtcOptionExpiries).
  */
-export async function fetchBtcOptionChain(expiryDateDDMMYYYY: string, useTestnet?: boolean): Promise<ApiResult<OptionChain>> {
-  const url = `${baseUrl(useTestnet)}/v2/tickers?contract_types=call_options,put_options&underlying_asset_symbols=BTC&expiry_date=${expiryDateDDMMYYYY}`;
+export async function fetchBtcOptionChain(expiryDateDDMMYYYY: string): Promise<ApiResult<OptionChain>> {
+  const url = `${API_BASE}/v2/tickers?contract_types=call_options,put_options&underlying_asset_symbols=BTC&expiry_date=${expiryDateDDMMYYYY}`;
   const result = await fetchJson<{ result?: RawTicker[] }>(url);
   if (!result.ok || !result.data) return { ok: false, error: result.error ?? "No data returned" };
 
